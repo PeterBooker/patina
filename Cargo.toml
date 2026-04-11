@@ -10,6 +10,10 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/PeterBooker/patina"
+description = "A PHP extension that replaces WordPress core functions with optimized Rust implementations"
+keywords = ["php", "wordpress", "performance", "extension"]
+categories = ["web-programming"]
 
 [profile.release]
 lto = "fat"

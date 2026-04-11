@@ -1,5 +1,8 @@
 # Patina
 
+[![CI](https://github.com/PeterBooker/patina/actions/workflows/ci.yml/badge.svg)](https://github.com/PeterBooker/patina/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A PHP extension written in Rust that replaces WordPress core functions with optimized native implementations. WordPress, themes, and plugins continue to function identically — hot-path string processing runs at near-native speed.
 
 ## Current Status
@@ -69,34 +72,35 @@ All algorithms live in `patina-core` — testable with `cargo test`, benchmarkab
 
 See [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) for the full layout.
 
-## Building from Source
+## Development
+
+Only Docker is required. No local Rust or PHP needed.
 
 ```bash
-# Prerequisites: Rust stable, PHP dev headers, clang
-cargo build --release -p patina-ext
-php -d extension=target/release/libpatina.so -r "echo patina_version();"
+git clone https://github.com/PeterBooker/patina.git
+cd patina
+make test       # Run all Rust + PHP tests
+make bench      # Run PHP benchmarks
+make check      # Full CI check (test + clippy + fmt + PHPUnit)
+make shell      # Open a shell in the dev container
 ```
 
-Docker build for a specific PHP version:
+Build for a specific PHP version:
 ```bash
-docker build --build-arg PHP_VERSION=8.3 -f docker/Dockerfile.build -o dist/ .
+PHP_VERSION=8.1 make build
 ```
+
+See `make help` for all targets. See [CONTRIBUTING.md](CONTRIBUTING.md) for local toolchain setup.
 
 ## Testing
 
 ```bash
-# Rust tests (56 tests including WordPress fixture validation)
-cargo test --workspace
-
-# PHP tests (179 tests, 2192 assertions)
-php -d extension=target/release/libpatina.so php/vendor/bin/phpunit --configuration php/phpunit.xml
-
-# Fuzz testing
-cargo +nightly fuzz run fuzz_esc_html -- -max_total_time=60
-
-# Benchmarks
-cargo bench -p patina-bench
-php -d extension=target/release/libpatina.so php/benchmarks/run.php
+make test           # All tests (Rust + PHP)
+make test-rust      # Rust tests only (56 tests)
+make test-php       # PHP tests only (179 tests, 2192 assertions)
+make bench          # PHP benchmarks (Rust vs PHP)
+make bench-jit      # PHP benchmarks with JIT enabled
+make bench-rust     # Criterion micro-benchmarks
 ```
 
 ## Rollback

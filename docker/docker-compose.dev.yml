@@ -1,0 +1,17 @@
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+      args:
+        PHP_VERSION: ${PHP_VERSION:-8.3}
+    volumes:
+      - ..:/app
+      # Cache Rust and Composer artifacts between runs
+      - cargo-registry:/root/.cargo/registry
+      - cargo-git:/root/.cargo/git
+    working_dir: /app
+
+volumes:
+  cargo-registry:
+  cargo-git:
