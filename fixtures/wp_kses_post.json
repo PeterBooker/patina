@@ -301,9 +301,21 @@
     },
     {
         "input": [
+            "<img src=\"data:image\/png;base64,abc\" alt=\"Data URI\" \/>"
+        ],
+        "output": "<img src=\"image\/png;base64,abc\" alt=\"Data URI\" \/>"
+    },
+    {
+        "input": [
             "<script>alert(\"xss\")<\/script>"
         ],
         "output": "alert(\"xss\")"
+    },
+    {
+        "input": [
+            "<style>body { color: red; }<\/style>"
+        ],
+        "output": "body { color: red; }"
     },
     {
         "input": [
@@ -319,6 +331,12 @@
     },
     {
         "input": [
+            "<object data=\"http:\/\/evil.com\/flash.swf\"><\/object>"
+        ],
+        "output": "<object><\/object>"
+    },
+    {
+        "input": [
             "<p>Safe <script>unsafe<\/script> safe again<\/p>"
         ],
         "output": "<p>Safe unsafe safe again<\/p>"
@@ -328,6 +346,30 @@
             "<div class=\"ok\"><script>bad<\/script><b>bold<\/b><\/div>"
         ],
         "output": "<div class=\"ok\">bad<b>bold<\/b><\/div>"
+    },
+    {
+        "input": [
+            "<p style=\"color: red;\">styled<\/p>"
+        ],
+        "output": "<p style=\"color: red\">styled<\/p>"
+    },
+    {
+        "input": [
+            "<p style=\"color: red\">no semicolon<\/p>"
+        ],
+        "output": "<p style=\"color: red\">no semicolon<\/p>"
+    },
+    {
+        "input": [
+            "<p style=\"background: url(javascript:alert(1))\">xss css<\/p>"
+        ],
+        "output": "<p>xss css<\/p>"
+    },
+    {
+        "input": [
+            "<div style=\"font-size: 14px; color: blue;\">multi style<\/div>"
+        ],
+        "output": "<div style=\"font-size: 14px;color: blue\">multi style<\/div>"
     },
     {
         "input": [
@@ -352,6 +394,18 @@
             "<!-- safe comment text -->"
         ],
         "output": "<!-- safe comment text -->"
+    },
+    {
+        "input": [
+            "<!-- <script>alert(1)<\/script> -->"
+        ],
+        "output": "&lt;!-- alert(1) --&gt;"
+    },
+    {
+        "input": [
+            "<!-- <b>allowed tag<\/b> -->"
+        ],
+        "output": "&lt;!-- <b>allowed tag<\/b> --&gt;"
     },
     {
         "input": [
@@ -427,6 +481,12 @@
     },
     {
         "input": [
+            "<div class=\"unclosed"
+        ],
+        "output": "&lt;div class=&quot;unclosed"
+    },
+    {
+        "input": [
             ""
         ],
         "output": ""
@@ -484,6 +544,18 @@
             "<a href=\"javascript:void(0)\">js<\/a>"
         ],
         "output": "<a href=\"void(0)\">js<\/a>"
+    },
+    {
+        "input": [
+            "<a href=\"data:text\/html,<h1>xss<\/h1>\">data<\/a>"
+        ],
+        "output": "&lt;a href=&quot;data:text\/html,<h1>xss<\/h1>\"&gt;data<\/a>"
+    },
+    {
+        "input": [
+            "<a href=\"data:text\/plain,hello\">data plain<\/a>"
+        ],
+        "output": "<a href=\"text\/plain,hello\">data plain<\/a>"
     },
     {
         "input": [

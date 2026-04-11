@@ -20,8 +20,12 @@ fn get_post_spec() -> &'static AllowedHtmlSpec {
 }
 
 /// Sanitize HTML content using the "post" preset (same as `wp_kses_post`).
+///
+/// Includes `wp_pre_kses_less_than` preprocessing, which is always active
+/// in WordPress as a default `pre_kses` filter.
 pub fn wp_kses_post(content: &str) -> String {
-    wp_kses(content, get_post_spec(), DEFAULT_PROTOCOLS)
+    let content = pre_kses_less_than(content);
+    wp_kses(&content, get_post_spec(), DEFAULT_PROTOCOLS)
 }
 
 /// Sanitize HTML content against an allowed HTML spec.
@@ -53,6 +57,114 @@ pub fn wp_kses(
 
     // Step 3: Split on HTML tokens and process
     kses_split(&content, allowed_html, allowed_protocols)
+}
+
+/// WordPress's `wp_pre_kses_less_than()` — a default `pre_kses` filter.
+///
+/// Finds `<` followed by content that doesn't properly close with `>` (hits
+/// another `<` or end of string first). Entity-encodes the malformed match.
+/// This catches nested `<` inside attributes and comments containing tags.
+fn pre_kses_less_than(content: &str) -> String {
+    let bytes = content.as_bytes();
+    if !bytes.contains(&b'<') {
+        return content.to_string();
+    }
+
+    let mut result = String::with_capacity(content.len() + content.len() / 8);
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'<' {
+                i += 1;
+            }
+            result.push_str(&content[start..i]);
+            continue;
+        }
+
+        // Found '<' — scan forward for '>' or another '<' or end of string
+        let start = i;
+        i += 1;
+        let mut found_close = false;
+        while i < bytes.len() {
+            if bytes[i] == b'>' {
+                found_close = true;
+                i += 1;
+                break;
+            }
+            if bytes[i] == b'<' {
+                // Hit another '<' before closing '>' — malformed
+                break;
+            }
+            i += 1;
+        }
+
+        if found_close {
+            // Well-formed tag — pass through
+            result.push_str(&content[start..i]);
+        } else {
+            // No closing '>' — entity-encode the match
+            let segment = &content[start..i];
+            let encoded = crate::escaping::specialchars::wp_specialchars(segment);
+            result.push_str(&encoded);
+        }
+    }
+
+    result
+}
+
+/// Basic CSS sanitization matching WordPress's `safecss_filter_attr()`.
+///
+/// Strips trailing semicolons from individual properties, blocks dangerous
+/// CSS patterns (url(), expression(), etc.), and normalizes spacing.
+pub fn safecss_filter_attr(css: &str) -> String {
+    let css = css.trim();
+    if css.is_empty() {
+        return String::new();
+    }
+
+    let lower = css.to_lowercase();
+
+    // Block dangerous CSS patterns entirely
+    if lower.contains("expression(")
+        || lower.contains("url(")
+        || lower.contains("import")
+        || lower.contains("binding")
+    {
+        return String::new();
+    }
+
+    // Split on ';', sanitize each property, rejoin
+    let parts: Vec<&str> = css.split(';').collect();
+    let mut cleaned = Vec::new();
+
+    for part in &parts {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        // Must contain a colon (property: value)
+        if !part.contains(':') {
+            continue;
+        }
+        let lower_part = part.to_lowercase();
+        // Block dangerous properties
+        if lower_part.contains("expression")
+            || lower_part.contains("javascript")
+            || lower_part.contains("vbscript")
+        {
+            continue;
+        }
+        cleaned.push(part);
+    }
+
+    if cleaned.is_empty() {
+        return String::new();
+    }
+
+    // WordPress joins with ';' between properties but no trailing ';'
+    cleaned.join(";")
 }
 
 /// Strip null bytes and control chars for kses (with slash_zero = 'keep').
@@ -121,8 +233,8 @@ fn extract_tag(content: &str, start: usize) -> TagSpan<'_> {
     let rest = &content[start..];
 
     // HTML comment: <!-- ... -->
-    if rest.starts_with("<!--") {
-        let end = rest[4..]
+    if let Some(after_open) = rest.strip_prefix("<!--") {
+        let end = after_open
             .find("-->")
             .map(|p| start + 4 + p + 3)
             .unwrap_or(content.len());
@@ -184,7 +296,7 @@ fn process_tag(
         return;
     }
 
-    if content.as_bytes().len() >= 3 && is_bogus_comment(content.as_bytes()) {
+    if content.len() >= 3 && is_bogus_comment(content.as_bytes()) {
         process_bogus_comment(content, allowed_html, allowed_protocols, out);
         return;
     }
@@ -318,18 +430,48 @@ fn process_normal_tag(
     out.push_str(elem);
 
     for attr in &parsed_attrs {
-        if tag_spec.is_attr_allowed(&attr.name.to_lowercase()) {
-            out.push(' ');
-            if attr.whole.contains('<') || attr.whole.contains('>') {
-                out.push_str(&attr.whole.replace(['<', '>'], ""));
-            } else {
-                out.push_str(&attr.whole);
+        let attr_lower = attr.name.to_lowercase();
+        if !tag_spec.is_attr_allowed(&attr_lower) {
+            continue;
+        }
+
+        // Style attributes get CSS sanitization
+        if attr_lower == "style" {
+            if let Some(value) = extract_attr_value(&attr.whole) {
+                let sanitized = safecss_filter_attr(value);
+                if sanitized.is_empty() {
+                    continue; // Dangerous CSS — strip the attribute
+                }
+                out.push(' ');
+                out.push_str(&format!("{}=\"{}\"", attr.name, sanitized));
+                continue;
             }
+        }
+
+        out.push(' ');
+        if attr.whole.contains('<') || attr.whole.contains('>') {
+            out.push_str(&attr.whole.replace(['<', '>'], ""));
+        } else {
+            out.push_str(&attr.whole);
         }
     }
 
     out.push_str(xhtml_slash);
     out.push('>');
+}
+
+/// Extract the value from a reconstructed attribute string like `name="value"`.
+fn extract_attr_value(whole: &str) -> Option<&str> {
+    let eq = whole.find('=')?;
+    let rest = &whole[eq + 1..];
+    if rest.len() >= 2
+        && ((rest.starts_with('"') && rest.ends_with('"'))
+            || (rest.starts_with('\'') && rest.ends_with('\'')))
+    {
+        Some(&rest[1..rest.len() - 1])
+    } else {
+        Some(rest)
+    }
 }
 
 // ============================================================================

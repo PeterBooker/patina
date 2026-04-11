@@ -23,6 +23,9 @@ pub struct TagSpec {
     pub allow_data_attrs: bool,
     /// Whether `aria-*` wildcard attributes are allowed.
     pub allow_aria_attrs: bool,
+    /// Attributes that have `required: true` or `value_callback` in WordPress.
+    /// These need PHP-side validation we can't replicate, so we strip them.
+    pub attrs_needing_php_validation: HashSet<String>,
 }
 
 impl AllowedHtmlSpec {
@@ -38,9 +41,9 @@ impl AllowedHtmlSpec {
 
     /// Check if a tag has no allowed attributes (should render bare).
     pub fn tag_has_no_attrs(&self, tag: &str) -> bool {
-        self.tags.get(tag).map_or(false, |spec| {
-            spec.attrs.is_empty() && !spec.allow_data_attrs
-        })
+        self.tags
+            .get(tag)
+            .is_some_and(|spec| spec.attrs.is_empty() && !spec.allow_data_attrs)
     }
 }
 
@@ -77,19 +80,31 @@ pub fn parse_allowed_html_json(json: &str) -> AllowedHtmlSpec {
         let mut spec = TagSpec::default();
 
         if let Some(attrs_obj) = attrs_val.as_object() {
-            for (attr_name, _attr_val) in attrs_obj {
+            for (attr_name, attr_val) in attrs_obj {
                 let attr_lower = attr_name.to_lowercase();
                 if attr_lower == "data-*" {
                     spec.allow_data_attrs = true;
                 } else if attr_lower == "aria-*" {
-                    // Some tags have aria-* as a wildcard pattern
                     spec.allow_aria_attrs = true;
                 } else if attr_lower.starts_with("aria-") {
-                    // Individual aria attributes also imply aria support
                     spec.allow_aria_attrs = true;
                     spec.attrs.insert(attr_lower);
                 } else {
-                    spec.attrs.insert(attr_lower);
+                    // Check if this attribute has value_callback or required+values
+                    // constraints that need PHP validation
+                    let needs_php = if let Some(obj) = attr_val.as_object() {
+                        obj.contains_key("value_callback")
+                            || obj.contains_key("values")
+                            || obj.contains_key("required")
+                    } else {
+                        false
+                    };
+
+                    if needs_php {
+                        spec.attrs_needing_php_validation.insert(attr_lower);
+                    } else {
+                        spec.attrs.insert(attr_lower);
+                    }
                 }
             }
         }

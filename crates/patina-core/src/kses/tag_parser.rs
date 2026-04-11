@@ -94,18 +94,17 @@ pub fn parse_attributes(
 
 /// Parse an attribute value. Returns (value, quote_char, bytes_consumed).
 fn parse_value(input: &str) -> (&str, Option<char>, usize) {
-    if input.starts_with('"') {
-        match input[1..].find('"') {
-            Some(p) => (&input[1..1 + p], Some('"'), 1 + p + 1),
-            None => (&input[1..], Some('"'), input.len()),
+    if let Some(inner) = input.strip_prefix('"') {
+        match inner.find('"') {
+            Some(p) => (&inner[..p], Some('"'), 1 + p + 1),
+            None => (inner, Some('"'), input.len()),
         }
-    } else if input.starts_with('\'') {
-        match input[1..].find('\'') {
-            Some(p) => (&input[1..1 + p], Some('\''), 1 + p + 1),
-            None => (&input[1..], Some('\''), input.len()),
+    } else if let Some(inner) = input.strip_prefix('\'') {
+        match inner.find('\'') {
+            Some(p) => (&inner[..p], Some('\''), 1 + p + 1),
+            None => (inner, Some('\''), input.len()),
         }
     } else {
-        // Unquoted value — ends at whitespace, /, or >
         let end = input
             .find(|c: char| c.is_ascii_whitespace() || c == '/' || c == '>')
             .unwrap_or(input.len());

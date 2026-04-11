@@ -1,6 +1,7 @@
 PHP_VERSION ?= 8.3
 DEV = docker compose -f docker/docker-compose.dev.yml run --rm dev
 PROF = docker compose -f profiling/docker-compose.yml
+export DOCKER_BUILDKIT = 1
 
 .PHONY: help build test test-rust test-php bench bench-wp bench-jit bench-rust check clean fixtures shell
 
@@ -37,21 +38,7 @@ bench-wp: ## Run all PHP benchmarks including kses (requires WordPress)
 	$(PROF) restart php-fpm
 	@sleep 2
 	@echo "=== Running benchmarks ==="
-	$(PROF) exec php-fpm php -d memory_limit=512M -r '\
-		require "/var/www/html/wp-load.php"; \
-		require "/app/php/benchmarks/Runner.php"; \
-		use Patina\Benchmarks\Runner; \
-		$$bench = new Runner(10000); \
-		$$inputs = [ \
-			"small_76B" => "<p>Simple <b>paragraph</b> with <a href=\"http://example.com\">link</a>.</p>", \
-			"medium_740B" => str_repeat("<p>Paragraph <b>bold</b> and <a href=\"http://example.com\">link</a>.</p>", 10), \
-			"with_script" => str_repeat("<p>Safe <script>alert(\"xss\")</script> text</p>", 5), \
-			"large_3KB" => str_repeat("<div class=\"container\"><p>Content with <strong>formatting</strong>, <a href=\"http://example.com\" title=\"Link\">links</a>, and &amp; entities.</p></div>", 20), \
-		]; \
-		foreach ($$inputs as $$label => $$input) { \
-			$$bench->run("wp_kses_post", $$label, "wp_kses_post", "patina_wp_kses_post", [$$input]); \
-		} \
-		$$bench->report();'
+	$(PROF) exec php-fpm php -d memory_limit=512M /app/php/benchmarks/bench-kses.php
 
 bench-jit: build ## Run PHP benchmarks with JIT enabled
 	$(DEV) php \

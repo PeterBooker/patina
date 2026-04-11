@@ -13,23 +13,32 @@ return [
             '<a href="http://example.com" onclick="alert(1)">click</a>',
             '<div class="container" id="main"><p>content</p></div>',
             '<img src="http://example.com/img.jpg" alt="Test" />',
+            '<img src="data:image/png;base64,abc" alt="Data URI" />',
 
             // Disallowed tags
             '<script>alert("xss")</script>',
+            '<style>body { color: red; }</style>',
             '<iframe src="http://evil.com"></iframe>',
             '<form action="http://evil.com"><input type="text"></form>',
+            '<object data="http://evil.com/flash.swf"></object>',
 
             // Mixed allowed and disallowed
             '<p>Safe <script>unsafe</script> safe again</p>',
             '<div class="ok"><script>bad</script><b>bold</b></div>',
 
             // Attribute filtering
+            '<p style="color: red;">styled</p>',
+            '<p style="color: red">no semicolon</p>',
+            '<p style="background: url(javascript:alert(1))">xss css</p>',
+            '<div style="font-size: 14px; color: blue;">multi style</div>',
             '<div data-custom="value">custom data attr</div>',
             '<span aria-label="accessible">text</span>',
 
             // Comments
             '<!-- This is a comment -->',
             '<!-- safe comment text -->',
+            '<!-- <script>alert(1)</script> -->',
+            '<!-- <b>allowed tag</b> -->',
 
             // Self-closing and XHTML
             '<br />',
@@ -48,6 +57,7 @@ return [
             '< div>content</div>',
             '<div  class = "spaced"  >content</div>',
             '<DIV CLASS="upper">content</DIV>',
+            '<div class="unclosed',
             '',
             'Plain text with no HTML at all',
 
@@ -66,6 +76,8 @@ return [
             '<a href="https://safe.com">https</a>',
             '<a href="ftp://files.com">ftp</a>',
             '<a href="javascript:void(0)">js</a>',
+            '<a href="data:text/html,<h1>xss</h1>">data</a>',
+            '<a href="data:text/plain,hello">data plain</a>',
             '<a href="vbscript:msgbox">vbs</a>',
             '<a href="mailto:user@example.com">email</a>',
             '<a href="tel:+1234567890">phone</a>',
