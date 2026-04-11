@@ -30,6 +30,7 @@ static ORIGINALS: Mutex<Vec<(&'static str, FuncPtr)>> = Mutex::new(Vec::new());
 const OVERRIDES: &[(&str, &str)] = &[
     ("esc_html", "patina_esc_html_filtered"),
     ("esc_attr", "patina_esc_attr_filtered"),
+    ("wp_kses_post", "patina_wp_kses_post_filtered"),
 ];
 
 /// Activate Patina: replace WordPress core functions with Rust implementations.
@@ -324,6 +325,39 @@ fn get_server_var(_key: &str) -> Option<String> {
 }
 
 // ============================================================================
+// KSES functions (HTML sanitization)
+// ============================================================================
+
+/// wp_kses_post raw — no filters, for direct use and benchmarking.
+#[php_function]
+pub fn patina_wp_kses_post(content: &str) -> PhpResult<String> {
+    panic_guard::guarded("patina_wp_kses_post", || {
+        patina_core::kses::wp_kses_post(content)
+    })
+}
+
+/// wp_kses_post filtered — calls apply_filters('pre_kses', ...) on INPUT
+/// before processing, matching WordPress's wp_kses_hook behavior.
+/// This is what gets swapped into the function table.
+#[php_function]
+pub fn patina_wp_kses_post_filtered(content: &str) -> PhpResult<String> {
+    // wp_kses_hook fires 'pre_kses' on the input BEFORE processing.
+    // For wp_kses_post, the allowed_html is 'post' and protocols are defaults.
+    let mut func = Zval::new();
+    func.set_string("apply_filters", false)
+        .map_err(|e| PhpException::default(format!("patina: apply_filters setup: {e}")))?;
+
+    let filtered_content = match call_user_func!(func, "pre_kses", content, "post") {
+        Ok(result) => result.string().unwrap_or_else(|| content.to_string()),
+        Err(_) => content.to_string(),
+    };
+
+    panic_guard::guarded("wp_kses_post", || {
+        patina_core::kses::wp_kses_post(&filtered_content)
+    })
+}
+
+// ============================================================================
 // Module registration
 // ============================================================================
 
@@ -342,6 +376,9 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         // escaping (filtered — for WordPress override)
         .function(wrap_function!(patina_esc_html_filtered))
         .function(wrap_function!(patina_esc_attr_filtered))
+        // kses
+        .function(wrap_function!(patina_wp_kses_post))
+        .function(wrap_function!(patina_wp_kses_post_filtered))
         // pluggable
         .function(wrap_function!(wp_sanitize_redirect))
         .function(wrap_function!(wp_validate_redirect))

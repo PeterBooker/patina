@@ -46,6 +46,21 @@ foreach ($urlInputs as $label => $input) {
     $bench->run('wp_sanitize_redirect', $label, 'reference_wp_sanitize_redirect', 'wp_sanitize_redirect', [$input]);
 }
 
+// --- KSES benchmarks ---
+
+if (function_exists('patina_wp_kses_post') && function_exists('wp_kses_post')) {
+    $ksesInputs = [
+        'small'  => '<p>Simple <b>paragraph</b> with <a href="http://example.com">link</a>.</p>',
+        'medium' => str_repeat('<p>Paragraph <b>bold</b> and <a href="http://example.com">link</a>.</p>', 10),
+        'script' => str_repeat('<p>Safe <script>alert("xss")</script> text</p>', 5),
+        'large'  => str_repeat('<div class="container"><p>Content with <strong>formatting</strong>, <a href="http://example.com" title="Link">links</a>, and &amp; entities.</p></div>', 20),
+    ];
+
+    foreach ($ksesInputs as $label => $input) {
+        $bench->run('wp_kses_post', $label, 'wp_kses_post', 'patina_wp_kses_post', [$input]);
+    }
+}
+
 $bench->report();
 
 // Print JIT status

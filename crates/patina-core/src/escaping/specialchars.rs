@@ -75,7 +75,7 @@ pub fn wp_specialchars(input: &str) -> Cow<'_, str> {
             // '&' — check if it's a valid entity (don't double-encode)
             let entity_len = entities::entity_len_at(bytes, i);
             if entity_len > 0 {
-                push_normalized_entity(&mut result, &input[i..i + entity_len]);
+                entities::push_normalized_entity(&mut result, &input[i..i + entity_len]);
                 i += entity_len;
             } else {
                 result.push_str("&amp;");
@@ -88,29 +88,6 @@ pub fn wp_specialchars(input: &str) -> Cow<'_, str> {
     }
 
     Cow::Owned(result)
-}
-
-/// Push an entity to the result, normalizing decimal numeric entities.
-///
-/// WordPress's `wp_kses_normalize_entities()` zero-pads decimal numeric
-/// entities to at least 3 digits: `&#38;` → `&#038;`, `&#1;` → `&#001;`.
-/// Named entities (`&amp;`) and hex entities (`&#x41;`) are unchanged.
-fn push_normalized_entity(result: &mut String, entity: &str) {
-    let bytes = entity.as_bytes();
-    // Check for decimal numeric entity: &#NNN;
-    if bytes.len() >= 4 && bytes[1] == b'#' && bytes[2] != b'x' && bytes[2] != b'X' {
-        let digits = &entity[2..entity.len() - 1];
-        if digits.len() < 3 {
-            result.push_str("&#");
-            for _ in 0..3 - digits.len() {
-                result.push('0');
-            }
-            result.push_str(digits);
-            result.push(';');
-            return;
-        }
-    }
-    result.push_str(entity);
 }
 
 #[cfg(test)]
