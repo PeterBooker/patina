@@ -52,42 +52,37 @@ jobs:
           cp target/release/libpatina.so \
             patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so
 
-      - name: Generate checksum
-        run: sha256sum patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so > patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so.sha256
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: patina-php${{ matrix.php }}-linux-${{ matrix.arch }}
+          path: patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so
+
+  upload:
+    name: Attach artifacts to release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          sha256sum *.so > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Upload to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so \
-            patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so.sha256 \
-            --clobber
-
-  checksums:
-    name: Upload combined checksums
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all individual checksums
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir dist
-          gh release download "${{ github.event.release.tag_name }}" \
-            --pattern "*.sha256" --dir dist/
-
-      - name: Generate combined SHA256SUMS
-        working-directory: dist
-        run: cat *.sha256 > SHA256SUMS
-
-      - name: Upload SHA256SUMS and bridge
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ github.event.release.tag_name }}" \
+            dist/*.so \
             dist/SHA256SUMS \
             php/bridge/patina-bridge.php \
             --clobber
