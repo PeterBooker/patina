@@ -1,0 +1,16 @@
+[package]
+name = "patina-bench"
+version.workspace = true
+edition.workspace = true
+
+[[bench]]
+name = "pluggable"
+harness = false
+
+[[bench]]
+name = "escaping"
+harness = false
+
+[dependencies]
+patina-core = { path = "../patina-core" }
+criterion = "0.5"

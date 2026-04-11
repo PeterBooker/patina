@@ -1,0 +1,126 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust-checks:
+    name: Rust tests, clippy, fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+  build-extension:
+    name: Build extension (PHP ${{ matrix.php }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.1", "8.2", "8.3", "8.4"]
+
+    container:
+      image: php:${{ matrix.php }}-cli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update && apt-get install -y \
+            curl build-essential pkg-config libclang-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: php-${{ matrix.php }}
+
+      - name: Build extension
+        run: cargo build --release -p patina-ext
+
+      - name: Verify extension loads
+        run: |
+          php -d extension=target/release/libpatina.so \
+            -r "echo 'PHP ' . PHP_VERSION . ': patina ' . patina_version() . PHP_EOL;"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: patina-php${{ matrix.php }}-linux-x86_64
+          path: target/release/libpatina.so
+
+  php-tests:
+    name: PHP tests (PHP ${{ matrix.php }})
+    needs: build-extension
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.1", "8.2", "8.3", "8.4"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring
+
+      - name: Download extension
+        uses: actions/download-artifact@v4
+        with:
+          name: patina-php${{ matrix.php }}-linux-x86_64
+          path: dist/
+
+      - name: Install extension
+        run: |
+          EXT_DIR=$(php -r "echo ini_get('extension_dir');")
+          sudo cp dist/libpatina.so "$EXT_DIR/patina.so"
+          echo "extension=patina.so" | sudo tee "$(php --ini | grep 'Scan for' | cut -d: -f2 | tr -d ' ')/99-patina.ini"
+          php -m | grep patina-ext
+
+      - name: Install Composer dependencies
+        working-directory: php
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run PHPUnit
+        working-directory: php
+        run: vendor/bin/phpunit
+
+  fuzz:
+    name: Fuzz testing
+    runs-on: ubuntu-latest
+    # Only run nightly or on main
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Fuzz esc_html (60s)
+        run: cargo +nightly fuzz run fuzz_esc_html -- -max_total_time=60
+
+      - name: Fuzz sanitize_redirect (60s)
+        run: cargo +nightly fuzz run fuzz_sanitize_redirect -- -max_total_time=60

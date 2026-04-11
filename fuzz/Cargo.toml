@@ -1,0 +1,25 @@
+[package]
+name = "patina-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "fuzz_esc_html"
+path = "fuzz_targets/esc_html.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_sanitize_redirect"
+path = "fuzz_targets/sanitize_redirect.rs"
+doc = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+patina-core = { path = "../crates/patina-core" }
+
+[workspace]
+members = ["."]

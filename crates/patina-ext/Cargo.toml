@@ -1,0 +1,12 @@
+[package]
+name = "patina-ext"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "patina"
+
+[dependencies]
+patina-core = { path = "../patina-core" }
+ext-php-rs = "0.15"

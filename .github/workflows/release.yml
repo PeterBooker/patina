@@ -1,0 +1,87 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (PHP ${{ matrix.php }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { php: "8.1", arch: x86_64, runner: ubuntu-latest }
+          - { php: "8.2", arch: x86_64, runner: ubuntu-latest }
+          - { php: "8.3", arch: x86_64, runner: ubuntu-latest }
+          - { php: "8.4", arch: x86_64, runner: ubuntu-latest }
+          - { php: "8.1", arch: aarch64, runner: ubuntu-24.04-arm }
+          - { php: "8.2", arch: aarch64, runner: ubuntu-24.04-arm }
+          - { php: "8.3", arch: aarch64, runner: ubuntu-24.04-arm }
+          - { php: "8.4", arch: aarch64, runner: ubuntu-24.04-arm }
+
+    container:
+      image: php:${{ matrix.php }}-cli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update && apt-get install -y \
+            curl build-essential pkg-config libclang-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release -p patina-ext
+
+      - name: Verify extension loads
+        run: |
+          php -d extension=target/release/libpatina.so \
+            -r "echo 'PHP ' . PHP_VERSION . ': patina ' . patina_version() . PHP_EOL;"
+
+      - name: Rename artifact
+        run: |
+          cp target/release/libpatina.so \
+            patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so
+
+      - name: Generate checksum
+        run: sha256sum patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so > patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: patina-php${{ matrix.php }}-linux-${{ matrix.arch }}
+          path: |
+            patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so
+            patina-php${{ matrix.php }}-linux-${{ matrix.arch }}.so.sha256
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate combined checksums
+        working-directory: dist
+        run: cat *.sha256 > SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.so
+            dist/SHA256SUMS
+            php/bridge/patina-bridge.php

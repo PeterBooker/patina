@@ -1,0 +1,22 @@
+ARG PHP_VERSION=8.3
+FROM php:${PHP_VERSION}-cli AS builder
+
+RUN apt-get update && apt-get install -y \
+    curl build-essential pkg-config libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /src
+COPY . .
+
+RUN cd crates/patina-ext && cargo build --release
+
+# Verify the extension loads
+RUN php -d extension=/src/target/release/libpatina.so -r "echo 'patina ' . patina_version() . ' loaded on PHP ' . PHP_VERSION . PHP_EOL;"
+
+# Output stage — extract the .so
+FROM scratch AS output
+COPY --from=builder /src/target/release/libpatina.so /patina.so

@@ -1,0 +1,31 @@
+FROM php:8.3-fpm
+
+# WordPress PHP extensions
+RUN apt-get update && apt-get install -y \
+    libpng-dev libjpeg-dev libfreetype6-dev \
+    libzip-dev libicu-dev libonig-dev \
+    unzip curl less default-mysql-client subversion git \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install gd mysqli zip intl mbstring opcache exif \
+    && rm -rf /var/lib/apt/lists/*
+
+# SPX profiler
+ARG SPX_VERSION=0.4.17
+RUN cd /tmp \
+    && curl -L https://github.com/NoiseByNorthwest/php-spx/archive/refs/tags/v${SPX_VERSION}.tar.gz | tar xz \
+    && cd php-spx-${SPX_VERSION} \
+    && phpize && ./configure && make -j$(nproc) && make install \
+    && rm -rf /tmp/php-spx-*
+
+COPY conf/spx.ini /usr/local/etc/php/conf.d/spx.ini
+COPY conf/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
+COPY conf/php-cli.ini /usr/local/etc/php/conf.d/php-cli.ini
+
+# WP-CLI
+RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+    && chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp
+
+# Allow WP-CLI as root in Docker
+ENV WP_CLI_ALLOW_ROOT=1
+
+WORKDIR /var/www/html

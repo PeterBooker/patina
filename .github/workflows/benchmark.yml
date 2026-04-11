@@ -1,0 +1,67 @@
+name: Benchmarks
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  deployments: write
+
+jobs:
+  rust-benchmarks:
+    name: Rust benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run Criterion benchmarks
+        run: cargo bench -p patina-bench -- --output-format bencher | tee bench-results.txt
+
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: cargo
+          output-file-path: bench-results.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: "120%"
+          comment-on-alert: true
+          fail-on-alert: false
+
+  php-benchmarks:
+    name: PHP benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: mbstring
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build extension
+        run: cargo build --release -p patina-ext
+
+      - name: Install extension
+        run: |
+          EXT_DIR=$(php -r "echo ini_get('extension_dir');")
+          sudo cp target/release/libpatina.so "$EXT_DIR/patina.so"
+          echo "extension=patina.so" | sudo tee "$(php --ini | grep 'Scan for' | cut -d: -f2 | tr -d ' ')/99-patina.ini"
+
+      - name: Run PHP benchmarks
+        run: php php/benchmarks/run.php 100000
+
+      - name: Run PHP benchmarks (JIT enabled)
+        run: |
+          php -d opcache.enable_cli=1 \
+              -d opcache.jit_buffer_size=128M \
+              -d opcache.jit=1255 \
+              php/benchmarks/run.php 100000
