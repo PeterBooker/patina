@@ -160,12 +160,16 @@ pub fn patina_loaded() -> bool {
 
 #[php_function]
 pub fn patina_esc_html(text: &str) -> PhpResult<String> {
-    panic_guard::guarded("patina_esc_html", || patina_core::escaping::esc_html(text))
+    panic_guard::guarded("patina_esc_html", || {
+        patina_core::escaping::esc_html(text).into_owned()
+    })
 }
 
 #[php_function]
 pub fn patina_esc_attr(text: &str) -> PhpResult<String> {
-    panic_guard::guarded("patina_esc_attr", || patina_core::escaping::esc_attr(text))
+    panic_guard::guarded("patina_esc_attr", || {
+        patina_core::escaping::esc_attr(text).into_owned()
+    })
 }
 
 // ============================================================================
@@ -176,7 +180,9 @@ pub fn patina_esc_attr(text: &str) -> PhpResult<String> {
 /// This is what gets swapped into the function table for esc_html().
 #[php_function]
 pub fn patina_esc_html_filtered(text: &str) -> PhpResult<String> {
-    let safe_text = panic_guard::guarded("esc_html", || patina_core::escaping::esc_html(text))?;
+    let safe_text = panic_guard::guarded("esc_html", || {
+        patina_core::escaping::esc_html(text).into_owned()
+    })?;
 
     // Call apply_filters('esc_html', $safe_text, $text) — matching WordPress behavior
     let mut func = Zval::new();
@@ -185,14 +191,16 @@ pub fn patina_esc_html_filtered(text: &str) -> PhpResult<String> {
 
     match call_user_func!(func, "esc_html", safe_text.as_str(), text) {
         Ok(result) => Ok(result.string().unwrap_or(safe_text)),
-        Err(_) => Ok(safe_text), // apply_filters unavailable, return unfiltered
+        Err(_) => Ok(safe_text),
     }
 }
 
 /// esc_attr replacement that calls apply_filters('esc_attr', $result, $text).
 #[php_function]
 pub fn patina_esc_attr_filtered(text: &str) -> PhpResult<String> {
-    let safe_text = panic_guard::guarded("esc_attr", || patina_core::escaping::esc_attr(text))?;
+    let safe_text = panic_guard::guarded("esc_attr", || {
+        patina_core::escaping::esc_attr(text).into_owned()
+    })?;
 
     let mut func = Zval::new();
     func.set_string("apply_filters", false)

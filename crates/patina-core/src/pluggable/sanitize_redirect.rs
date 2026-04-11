@@ -1,61 +1,66 @@
 //! `wp_sanitize_redirect()` — sanitizes a URL for use in a redirect.
 //!
-//! This is the first function implemented as a proof of concept (Phase 4).
 //! Pure string processing, no WordPress state dependencies.
 
-use crate::util::{byte_class, null_bytes};
+use crate::util::byte_class;
+
+/// Hex encoding lookup table — avoids branch in the hot loop.
+const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
 
 /// Sanitize a URL for use in a redirect.
 ///
 /// Replaces WordPress's `wp_sanitize_redirect()` from `pluggable.php`.
 ///
-/// Steps (matching WordPress behavior):
-/// 1. Replace spaces with `%20`
-/// 2. Percent-encode multibyte UTF-8 characters
-/// 3. Strip characters not in the URL-safe allowlist
-/// 4. Strip null bytes (wp_kses_no_null behavior)
+/// Single-pass: handles space encoding, multibyte percent-encoding,
+/// and disallowed character stripping together.
+///
+/// WordPress runs `wp_kses_no_null()` after the allowlist filter, but all
+/// characters it would strip (null bytes, control chars, backslash sequences)
+/// are already not URL-safe, so the allowlist filter handles them.
 pub fn sanitize_redirect(location: &str) -> String {
-    // Step 1: Replace spaces with %20
+    let bytes = location.as_bytes();
     let mut result = String::with_capacity(location.len() + location.len() / 4);
+    let mut i = 0;
 
-    for ch in location.chars() {
-        match ch {
-            // Step 1: spaces → %20
-            ' ' => result.push_str("%20"),
+    while i < bytes.len() {
+        let b = bytes[i];
 
-            // Step 2: multibyte chars → percent-encoded UTF-8 bytes
-            c if c.len_utf8() > 1 => {
-                let mut buf = [0u8; 4];
-                let encoded = c.encode_utf8(&mut buf);
-                for byte in encoded.as_bytes() {
-                    result.push('%');
-                    result.push(hex_char(byte >> 4));
-                    result.push(hex_char(byte & 0x0F));
-                }
+        if b == b' ' {
+            // Spaces → %20
+            result.push_str("%20");
+            i += 1;
+        } else if b >= 0x80 {
+            // Multibyte UTF-8: percent-encode the full character
+            let ch_len = utf8_char_len(b);
+            let end = (i + ch_len).min(bytes.len());
+            for &byte in &bytes[i..end] {
+                result.push('%');
+                result.push(HEX_UPPER[(byte >> 4) as usize] as char);
+                result.push(HEX_UPPER[(byte & 0x0F) as usize] as char);
             }
-
-            // ASCII characters — will be filtered by allowlist in step 3
-            c => result.push(c),
+            i = end;
+        } else if byte_class::URL_SAFE_REDIRECT[b as usize] {
+            // ASCII URL-safe character — pass through
+            result.push(b as char);
+            i += 1;
+        } else {
+            // Disallowed ASCII character — strip
+            i += 1;
         }
     }
 
-    // Step 3: Strip characters not in the URL-safe allowlist
-    let filtered: String = result
-        .bytes()
-        .filter(|&b| byte_class::URL_SAFE_REDIRECT[b as usize])
-        .map(|b| b as char)
-        .collect();
-
-    // Step 4: Strip null bytes
-    null_bytes::strip_null_bytes(&filtered)
+    result
 }
 
-/// Convert a nibble (0-15) to its uppercase hex character.
-fn hex_char(nibble: u8) -> char {
-    match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'A' + nibble - 10) as char,
-        _ => unreachable!(),
+/// Determine UTF-8 character length from the first byte.
+#[inline]
+fn utf8_char_len(first_byte: u8) -> usize {
+    match first_byte {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xFF => 4,
+        _ => 1,
     }
 }
 
@@ -82,7 +87,6 @@ mod tests {
     #[test]
     fn multibyte_percent_encoded() {
         let result = sanitize_redirect("http://example.com/日本");
-        // Each CJK character is 3 UTF-8 bytes → 3 percent-encoded sequences
         assert!(result.contains("%E6%97%A5")); // 日
         assert!(result.contains("%E6%9C%AC")); // 本
         assert!(!result.contains("日"));
