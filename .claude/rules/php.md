@@ -28,3 +28,7 @@ paths:
 
 - Reference WordPress implementations (verbatim copies) in `php/benchmarks/reference/`.
 - Harness in `Runner.php` reports per-function speedup.
+
+## After every change
+
+Run `make test-php` before reporting a task as done. Do not skip this.

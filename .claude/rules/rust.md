@@ -39,7 +39,16 @@ This project exists to make WordPress faster. Every implementation choice should
 - Function table swap writes `zval.value.ptr` directly. Never use `zend_hash_str_update` — it triggers destructors.
 - No `unwrap()` in patina-ext. Fine in tests and patina-core.
 
+## After every change
+
+Run these before reporting a task as done:
+1. `cargo test --workspace` — all tests must pass
+2. `cargo clippy --workspace -- -D warnings` — no warnings
+3. `cargo fmt --all` — auto-format
+4. `make test-php` — PHP tests must pass if any PHP-visible behavior changed
+
+Do not skip these. Do not report success without running them.
+
 ## Style
 
-- `cargo fmt --all` and `cargo clippy --workspace -- -D warnings` must pass.
 - Do not change `panic = "unwind"` in the release profile.
