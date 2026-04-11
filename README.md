@@ -30,12 +30,12 @@ Pluggable functions (`wp_sanitize_redirect`, `wp_validate_redirect`) replace Wor
 
 ```bash
 # Auto-detect PHP version and architecture, download from GitHub Releases
-curl -sSL https://raw.githubusercontent.com/<org>/patina/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/PeterBooker/patina/main/install.sh | bash
 
 # Or manually:
 PHP_VERSION=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;")
 ARCH=$(uname -m)
-wget https://github.com/<org>/patina/releases/latest/download/patina-php${PHP_VERSION}-linux-${ARCH}.so
+wget https://github.com/PeterBooker/patina/releases/latest/download/patina-php${PHP_VERSION}-linux-${ARCH}.so
 
 # Install
 sudo cp patina-*.so $(php -r "echo ini_get('extension_dir');")/patina.so
