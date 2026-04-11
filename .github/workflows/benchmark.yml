@@ -21,16 +21,8 @@ jobs:
       - name: Run Criterion benchmarks
         run: cargo bench -p patina-bench -- --output-format bencher | tee bench-results.txt
 
-      - name: Store benchmark results
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          tool: cargo
-          output-file-path: bench-results.txt
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          alert-threshold: "120%"
-          comment-on-alert: true
-          fail-on-alert: false
+      - name: Print benchmark results
+        run: cat bench-results.txt
 
   php-benchmarks:
     name: PHP benchmarks
