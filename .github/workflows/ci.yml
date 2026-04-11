@@ -6,6 +6,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   rust-checks:
@@ -100,7 +101,7 @@ jobs:
 
       - name: Install Composer dependencies
         working-directory: php
-        run: composer install --no-interaction --prefer-dist
+        run: composer update --no-interaction --prefer-dist
 
       - name: Run PHPUnit
         working-directory: php
