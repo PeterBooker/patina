@@ -10,9 +10,9 @@ pub const DEFAULT_PROTOCOLS: &[&str] = &[
     "feed", "telnet", "mms", "rtsp", "sms", "svn", "tel", "fax", "xmpp", "webcal", "urn",
 ];
 
-/// WordPress attributes that contain URIs (must be protocol-checked).
-/// Sorted for binary search.
-const URI_ATTRIBUTES: &[&str] = &[
+/// WordPress's default URI-bearing attribute names. Matches the hardcoded
+/// list in `wp_kses_uri_attributes()` before the filter is applied.
+pub const DEFAULT_URI_ATTRIBUTES: &[&str] = &[
     "action",
     "archive",
     "background",
@@ -33,10 +33,9 @@ const URI_ATTRIBUTES: &[&str] = &[
 ];
 
 /// Check if an attribute name is a URI attribute that needs protocol checking.
-pub fn is_uri_attribute(attr: &str) -> bool {
-    // Input may be mixed case; the table is lowercase.
-    let lower = attr.to_lowercase();
-    URI_ATTRIBUTES.binary_search(&lower.as_str()).is_ok()
+/// `uri_attrs` is expected to contain lowercase names.
+pub fn is_uri_attribute(attr: &str, uri_attrs: &[&str]) -> bool {
+    uri_attrs.iter().any(|u| u.eq_ignore_ascii_case(attr))
 }
 
 /// Check if a URL value uses an allowed protocol.

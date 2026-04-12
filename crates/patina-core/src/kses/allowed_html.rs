@@ -61,6 +61,22 @@ impl TagSpec {
         }
         false
     }
+
+    /// Add an attribute name, handling the `data-*` / `aria-*` wildcards and
+    /// prefixed aria attributes the same way WordPress treats them.
+    pub fn add_attr_name(&mut self, attr_name: &str) {
+        let attr_lower = attr_name.to_lowercase();
+        if attr_lower == "data-*" {
+            self.allow_data_attrs = true;
+        } else if attr_lower == "aria-*" {
+            self.allow_aria_attrs = true;
+        } else if attr_lower.starts_with("aria-") {
+            self.allow_aria_attrs = true;
+            self.attrs.insert(attr_lower);
+        } else {
+            self.attrs.insert(attr_lower);
+        }
+    }
 }
 
 /// Build the "post" preset from the JSON spec exported from WordPress.
@@ -81,30 +97,20 @@ pub fn parse_allowed_html_json(json: &str) -> AllowedHtmlSpec {
 
         if let Some(attrs_obj) = attrs_val.as_object() {
             for (attr_name, attr_val) in attrs_obj {
-                let attr_lower = attr_name.to_lowercase();
-                if attr_lower == "data-*" {
-                    spec.allow_data_attrs = true;
-                } else if attr_lower == "aria-*" {
-                    spec.allow_aria_attrs = true;
-                } else if attr_lower.starts_with("aria-") {
-                    spec.allow_aria_attrs = true;
-                    spec.attrs.insert(attr_lower);
-                } else {
-                    // Check if this attribute has value_callback or required+values
-                    // constraints that need PHP validation
-                    let needs_php = if let Some(obj) = attr_val.as_object() {
-                        obj.contains_key("value_callback")
-                            || obj.contains_key("values")
-                            || obj.contains_key("required")
-                    } else {
-                        false
-                    };
+                // Check if this attribute has value_callback / values / required
+                // constraints that require PHP-side validation — if so, the
+                // attribute is recorded as "needs PHP" and stripped in Rust.
+                let needs_php = attr_val.as_object().is_some_and(|obj| {
+                    obj.contains_key("value_callback")
+                        || obj.contains_key("values")
+                        || obj.contains_key("required")
+                });
 
-                    if needs_php {
-                        spec.attrs_needing_php_validation.insert(attr_lower);
-                    } else {
-                        spec.attrs.insert(attr_lower);
-                    }
+                if needs_php {
+                    spec.attrs_needing_php_validation
+                        .insert(attr_name.to_lowercase());
+                } else {
+                    spec.add_attr_name(attr_name);
                 }
             }
         }

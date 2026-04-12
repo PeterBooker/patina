@@ -3,7 +3,7 @@ DEV = docker compose -f docker/docker-compose.dev.yml run --rm dev
 PROF = docker compose -f profiling/docker-compose.yml
 export DOCKER_BUILDKIT = 1
 
-.PHONY: help build test test-rust test-php bench bench-wp bench-jit bench-rust check clean fixtures shell
+.PHONY: help build test test-rust test-php test-integration bench bench-wp bench-jit bench-rust check clean fixtures shell
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -22,6 +22,23 @@ test-php: build ## Run PHP tests
 		cd php && \
 		composer update --no-interaction --quiet && \
 		php -d extension=/app/target/release/libpatina.so vendor/bin/phpunit'
+
+test-integration: ## Run WordPress integration tests (spins up profiling stack)
+	@echo "=== Building extension for PHP 8.3 ==="
+	docker build --build-arg PHP_VERSION=8.3 -f docker/Dockerfile.build --target builder -t patina-build-8.3 . > /dev/null
+	docker run --rm patina-build-8.3 cat /src/target/release/libpatina.so > /tmp/patina-8.3.so
+	@echo "=== Ensuring PHPUnit is installed ==="
+	$(DEV) sh -c 'cd php && composer update --no-interaction --quiet'
+	@echo "=== Starting WordPress stack ==="
+	$(PROF) up -d
+	@EXT_DIR=$$($(PROF) exec php-fpm php -r "echo ini_get('extension_dir');") && \
+		$(PROF) cp /tmp/patina-8.3.so php-fpm:$$EXT_DIR/patina.so && \
+		$(PROF) exec php-fpm bash -c 'echo "extension=patina.so" > /usr/local/etc/php/conf.d/patina.ini' && \
+		$(PROF) exec php-fpm bash -c 'mkdir -p /var/www/html/wp-content/mu-plugins && cp /app/php/bridge/patina-bridge.php /var/www/html/wp-content/mu-plugins/'
+	$(PROF) restart php-fpm
+	@sleep 2
+	@echo "=== Running integration tests ==="
+	$(PROF) exec -T php-fpm php -d memory_limit=512M /app/php/vendor/bin/phpunit -c /app/php/tests-integration/phpunit.xml
 
 bench: build ## Run PHP benchmarks (escaping + sanitize_redirect)
 	$(DEV) php -d extension=/app/target/release/libpatina.so php/benchmarks/run.php 50000

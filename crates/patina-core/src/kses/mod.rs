@@ -10,12 +10,12 @@ pub mod tag_parser;
 use std::sync::OnceLock;
 
 use allowed_html::AllowedHtmlSpec;
-use protocols::DEFAULT_PROTOCOLS;
+use protocols::{DEFAULT_PROTOCOLS, DEFAULT_URI_ATTRIBUTES};
 
 /// Cached "post" preset spec (built once, reused across calls).
 static POST_SPEC: OnceLock<AllowedHtmlSpec> = OnceLock::new();
 
-fn get_post_spec() -> &'static AllowedHtmlSpec {
+pub fn get_post_spec() -> &'static AllowedHtmlSpec {
     POST_SPEC.get_or_init(allowed_html::build_post_spec)
 }
 
@@ -28,16 +28,35 @@ pub fn wp_kses_post(content: &str) -> String {
     wp_kses(&content, get_post_spec(), DEFAULT_PROTOCOLS)
 }
 
+/// Sanitize HTML content against an allowed HTML spec with WordPress's default
+/// URI-bearing attribute list.
+pub fn wp_kses(
+    content: &str,
+    allowed_html: &AllowedHtmlSpec,
+    allowed_protocols: &[&str],
+) -> String {
+    wp_kses_with_uri_attrs(
+        content,
+        allowed_html,
+        allowed_protocols,
+        DEFAULT_URI_ATTRIBUTES,
+    )
+}
+
 /// Sanitize HTML content against an allowed HTML spec.
 ///
 /// Matches WordPress's `wp_kses()`:
 /// 1. Strip control characters (wp_kses_no_null with slash_zero=keep)
 /// 2. Normalize entities
 /// 3. Split on HTML tokens and filter tags/attributes
-pub fn wp_kses(
+///
+/// `uri_attrs` lets the caller override the default list of URI-bearing
+/// attribute names (the `wp_kses_uri_attributes` filter result).
+pub fn wp_kses_with_uri_attrs(
     content: &str,
     allowed_html: &AllowedHtmlSpec,
     allowed_protocols: &[&str],
+    uri_attrs: &[&str],
 ) -> String {
     if content.is_empty() {
         return String::new();
@@ -56,7 +75,7 @@ pub fn wp_kses(
     let content = normalize::normalize_entities(&content);
 
     // Step 3: Split on HTML tokens and process
-    kses_split(&content, allowed_html, allowed_protocols)
+    kses_split(&content, allowed_html, allowed_protocols, uri_attrs)
 }
 
 /// WordPress's `wp_pre_kses_less_than()` — a default `pre_kses` filter.
@@ -192,7 +211,12 @@ fn strip_control_chars(input: &str) -> std::borrow::Cow<'_, str> {
 // ============================================================================
 
 /// Split content on HTML tokens and process each.
-fn kses_split(content: &str, allowed_html: &AllowedHtmlSpec, allowed_protocols: &[&str]) -> String {
+fn kses_split(
+    content: &str,
+    allowed_html: &AllowedHtmlSpec,
+    allowed_protocols: &[&str],
+    uri_attrs: &[&str],
+) -> String {
     let mut result = String::with_capacity(content.len());
     let bytes = content.as_bytes();
     let mut i = 0;
@@ -201,7 +225,13 @@ fn kses_split(content: &str, allowed_html: &AllowedHtmlSpec, allowed_protocols: 
         match bytes[i] {
             b'<' => {
                 let span = extract_tag(content, i);
-                process_tag(span.content, allowed_html, allowed_protocols, &mut result);
+                process_tag(
+                    span.content,
+                    allowed_html,
+                    allowed_protocols,
+                    uri_attrs,
+                    &mut result,
+                );
                 i = span.end;
             }
             b'>' => {
@@ -284,6 +314,7 @@ fn process_tag(
     content: &str,
     allowed_html: &AllowedHtmlSpec,
     allowed_protocols: &[&str],
+    uri_attrs: &[&str],
     out: &mut String,
 ) {
     if !content.starts_with('<') {
@@ -292,16 +323,16 @@ fn process_tag(
     }
 
     if content.starts_with("<!--") {
-        process_comment(content, allowed_html, allowed_protocols, out);
+        process_comment(content, allowed_html, allowed_protocols, uri_attrs, out);
         return;
     }
 
     if content.len() >= 3 && is_bogus_comment(content.as_bytes()) {
-        process_bogus_comment(content, allowed_html, allowed_protocols, out);
+        process_bogus_comment(content, allowed_html, allowed_protocols, uri_attrs, out);
         return;
     }
 
-    process_normal_tag(content, allowed_html, allowed_protocols, out);
+    process_normal_tag(content, allowed_html, allowed_protocols, uri_attrs, out);
 }
 
 /// Process an HTML comment: <!-- ... -->
@@ -309,6 +340,7 @@ fn process_comment(
     content: &str,
     allowed_html: &AllowedHtmlSpec,
     allowed_protocols: &[&str],
+    uri_attrs: &[&str],
     out: &mut String,
 ) {
     let inner = content
@@ -316,7 +348,7 @@ fn process_comment(
         .and_then(|s| s.strip_suffix("-->"))
         .unwrap_or(&content[4..]);
 
-    let mut cleaned = wp_kses(inner, allowed_html, allowed_protocols);
+    let mut cleaned = wp_kses_with_uri_attrs(inner, allowed_html, allowed_protocols, uri_attrs);
 
     // Prevent multiple dashes and trailing dash
     while cleaned.contains("--") {
@@ -338,14 +370,15 @@ fn process_bogus_comment(
     content: &str,
     allowed_html: &AllowedHtmlSpec,
     allowed_protocols: &[&str],
+    uri_attrs: &[&str],
     out: &mut String,
 ) {
     let opener = content.as_bytes()[1] as char;
     let inner = &content[2..content.len().saturating_sub(1)];
 
-    let mut cleaned = wp_kses(inner, allowed_html, allowed_protocols);
+    let mut cleaned = wp_kses_with_uri_attrs(inner, allowed_html, allowed_protocols, uri_attrs);
     loop {
-        let next = wp_kses(&cleaned, allowed_html, allowed_protocols);
+        let next = wp_kses_with_uri_attrs(&cleaned, allowed_html, allowed_protocols, uri_attrs);
         if next == cleaned {
             break;
         }
@@ -363,6 +396,7 @@ fn process_normal_tag(
     content: &str,
     allowed_html: &AllowedHtmlSpec,
     allowed_protocols: &[&str],
+    uri_attrs: &[&str],
     out: &mut String,
 ) {
     let tag_inner = &content[1..]; // Strip leading <
@@ -422,7 +456,7 @@ fn process_normal_tag(
     };
 
     // Parse and filter attributes
-    let is_uri = |name: &str| protocols::is_uri_attribute(name);
+    let is_uri = |name: &str| protocols::is_uri_attribute(name, uri_attrs);
     let check_proto = |value: &str| protocols::check_url_protocol(value, allowed_protocols);
     let parsed_attrs = tag_parser::parse_attributes(attrlist, &is_uri, &check_proto);
 

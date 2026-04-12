@@ -8,6 +8,7 @@ use ext_php_rs::types::Zval;
 use std::ffi::c_char;
 use std::sync::Mutex;
 
+mod kses_bridge;
 mod panic_guard;
 pub mod php_callback;
 
@@ -27,11 +28,41 @@ static ORIGINALS: Mutex<Vec<(&'static str, FuncPtr)>> = Mutex::new(Vec::new());
 
 /// Function overrides to apply: (wordpress_name, patina_name).
 /// The patina_name function replaces the wordpress_name in the function table.
+///
+/// Each entry's replacement must have an **identical PHP signature** to the
+/// WordPress function it replaces. Otherwise pre-compiled callers (e.g.
+/// `wp_kses_post` in wp-includes/kses.php) emit specialized `DO_UCALL`
+/// opcodes assuming the original user-function ABI, and dispatching them
+/// to an ext-php-rs internal-function replacement crashes in `execute_ex`.
+///
+/// For functions whose signature can't be matched exactly by a Rust
+/// `&str` parameter list, use a PHP user-function shim instead — see
+/// `SHIM_OVERRIDES` and `KSES_SHIM_PHP` below.
 const OVERRIDES: &[(&str, &str)] = &[
     ("esc_html", "patina_esc_html_filtered"),
     ("esc_attr", "patina_esc_attr_filtered"),
-    ("wp_kses_post", "patina_wp_kses_post_filtered"),
 ];
+
+/// Shim overrides: a PHP user-function shim is defined via `php_eval::execute`
+/// during activation, then swapped into the target slot. The shim trampolines
+/// to an ext-php-rs internal function. This works for callers compiled against
+/// the original WP function because user→user dispatch stays valid.
+///
+/// Entry format: `(wordpress_name, shim_name)`. The shim body is embedded in
+/// `KSES_SHIM_PHP` and must define the shim function with a signature that
+/// matches the WordPress function byte-for-byte.
+const SHIM_OVERRIDES: &[(&str, &str)] = &[("wp_kses", "__patina_wp_kses_shim__")];
+
+/// PHP source that declares the wp_kses shim. Compiled and executed once
+/// during `patina_activate`. The shim signature mirrors WordPress's
+/// `wp_kses($content, $allowed_html, $allowed_protocols = array())` exactly,
+/// so that pre-compiled `DO_UCALL` callers (wp_kses_post et al.) dispatch
+/// into user-function territory as expected.
+const KSES_SHIM_PHP: &str = r#"<?php
+function __patina_wp_kses_shim__($content, $allowed_html, $allowed_protocols = array()) {
+    return patina_wp_kses_internal($content, $allowed_html, $allowed_protocols);
+}
+"#;
 
 /// Activate Patina: replace WordPress core functions with Rust implementations.
 ///
@@ -42,15 +73,44 @@ pub fn patina_activate() -> PhpResult<i64> {
     let mut count = 0i64;
 
     for &(target, replacement) in OVERRIDES {
-        match swap_function(target, replacement) {
-            Ok(()) => count += 1,
-            Err(_) => {
-                // Skip this function silently — caller can check count vs expected
-            }
+        if swap_function(target, replacement).is_ok() {
+            count += 1;
+        }
+    }
+
+    // Shim overrides: define the PHP user-function shim once, then swap.
+    // The shim definition is idempotent-ish: if __patina_wp_kses_shim__
+    // already exists, compiling again will emit a warning but not fail.
+    // We check first to stay clean on re-activation.
+    if !php_function_exists("__patina_wp_kses_shim__") {
+        if let Err(e) = ext_php_rs::php_eval::execute(KSES_SHIM_PHP) {
+            return Err(PhpException::default(format!(
+                "patina: shim eval failed: {e}"
+            )));
+        }
+    }
+    for &(target, replacement) in SHIM_OVERRIDES {
+        if swap_function(target, replacement).is_ok() {
+            count += 1;
         }
     }
 
     Ok(count)
+}
+
+/// Check whether a PHP function exists in the current function table.
+fn php_function_exists(name: &str) -> bool {
+    unsafe {
+        let eg = ext_php_rs_executor_globals();
+        if eg.is_null() {
+            return false;
+        }
+        let fn_table = (*eg).function_table;
+        if fn_table.is_null() {
+            return false;
+        }
+        !zend_hash_str_find(fn_table, name.as_ptr() as *const c_char, name.len()).is_null()
+    }
 }
 
 /// Deactivate Patina: restore all original WordPress function implementations.
@@ -336,24 +396,45 @@ pub fn patina_wp_kses_post(content: &str) -> PhpResult<String> {
     })
 }
 
-/// wp_kses_post filtered — calls apply_filters('pre_kses', ...) on INPUT
-/// before processing, matching WordPress's wp_kses_hook behavior.
-/// This is what gets swapped into the function table.
+/// Internal wp_kses implementation — the Rust side of the shim trampoline.
+///
+/// Called from `__patina_wp_kses_shim__` which is itself bound to `wp_kses`
+/// in the function table. The shim's signature mirrors WordPress's
+/// `wp_kses()` exactly (3 params, optional 3rd), so pre-compiled PHP callers
+/// dispatch into user-function territory safely. The shim then forwards all
+/// three args to this function, which does the full filter bridge work:
+///
+/// 1. Fires `apply_filters('pre_kses', $content, $allowed_html, $allowed_protocols)`
+///    so `wp_pre_kses_less_than` and any plugin filters run.
+/// 2. Resolves the allowed HTML spec via `wp_kses_allowed_html($allowed_html)`
+///    (fires the `wp_kses_allowed_html` filter). Falls back to the cached
+///    Rust `post` spec when no filter is registered and the context is `'post'`.
+/// 3. Resolves protocols via `wp_allowed_protocols()` (fires
+///    `kses_allowed_protocols`) or uses the caller's explicit list.
+/// 4. Resolves URI attributes via `wp_kses_uri_attributes()` (fires
+///    `wp_kses_uri_attributes`).
+/// 5. Runs the Rust sanitization pipeline.
 #[php_function]
-pub fn patina_wp_kses_post_filtered(content: &str) -> PhpResult<String> {
-    // wp_kses_hook fires 'pre_kses' on the input BEFORE processing.
-    // For wp_kses_post, the allowed_html is 'post' and protocols are defaults.
-    let mut func = Zval::new();
-    func.set_string("apply_filters", false)
-        .map_err(|e| PhpException::default(format!("patina: apply_filters setup: {e}")))?;
+pub fn patina_wp_kses_internal(
+    content: &str,
+    allowed_html: &Zval,
+    allowed_protocols: &Zval,
+) -> PhpResult<String> {
+    let filtered_content = kses_bridge::apply_pre_kses(content, allowed_html, allowed_protocols);
 
-    let filtered_content = match call_user_func!(func, "pre_kses", content, "post") {
-        Ok(result) => result.string().unwrap_or_else(|| content.to_string()),
-        Err(_) => content.to_string(),
-    };
+    let spec_ref = kses_bridge::resolve_allowed_html(allowed_html);
+    let protocols_ref = kses_bridge::resolve_protocols(allowed_protocols);
+    let uri_attrs_ref = kses_bridge::resolve_uri_attrs();
 
-    panic_guard::guarded("wp_kses_post", || {
-        patina_core::kses::wp_kses_post(&filtered_content)
+    panic_guard::guarded("wp_kses", || {
+        let protocols = protocols_ref.as_slice();
+        let uri_attrs = uri_attrs_ref.as_slice();
+        patina_core::kses::wp_kses_with_uri_attrs(
+            &filtered_content,
+            spec_ref.as_ref(),
+            &protocols,
+            &uri_attrs,
+        )
     })
 }
 
@@ -378,7 +459,7 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         .function(wrap_function!(patina_esc_attr_filtered))
         // kses
         .function(wrap_function!(patina_wp_kses_post))
-        .function(wrap_function!(patina_wp_kses_post_filtered))
+        .function(wrap_function!(patina_wp_kses_internal))
         // pluggable
         .function(wrap_function!(wp_sanitize_redirect))
         .function(wrap_function!(wp_validate_redirect))
