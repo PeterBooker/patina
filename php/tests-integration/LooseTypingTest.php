@@ -131,4 +131,54 @@ class LooseTypingTest extends IntegrationTestCase
         $this->assertStringNotContainsString('<script', $result);
         $this->assertStringNotContainsString('</script', $result);
     }
+
+    // ========================================================================
+    // wp_sanitize_redirect — pluggable, same coercion issue
+    // ========================================================================
+
+    public function test_wp_sanitize_redirect_accepts_null(): void
+    {
+        // wp_get_referer() can return false/null, which plugins might pass
+        // straight to wp_sanitize_redirect without a guard.
+        $this->assertSame('', wp_sanitize_redirect(null));
+    }
+
+    public function test_wp_sanitize_redirect_accepts_false(): void
+    {
+        $this->assertSame('', wp_sanitize_redirect(false));
+    }
+
+    public function test_wp_sanitize_redirect_still_works_for_strings(): void
+    {
+        $this->assertSame(
+            'https://example.com/page',
+            wp_sanitize_redirect('https://example.com/page')
+        );
+    }
+
+    // ========================================================================
+    // wp_validate_redirect — optional fallback_url + coercion
+    // ========================================================================
+
+    public function test_wp_validate_redirect_with_only_location(): void
+    {
+        // PHP signature: function wp_validate_redirect($location, $fallback_url = '')
+        // Calling with 1 arg must not throw ArgumentCountError.
+        $result = wp_validate_redirect('https://example.com/');
+        // Any string result is fine — the point of this test is "does not throw".
+        $this->assertIsString($result);
+    }
+
+    public function test_wp_validate_redirect_accepts_null_location(): void
+    {
+        // Should not throw; should fall back to the fallback_url (defaulting to '').
+        $result = wp_validate_redirect(null);
+        $this->assertIsString($result);
+    }
+
+    public function test_wp_validate_redirect_accepts_null_fallback(): void
+    {
+        $result = wp_validate_redirect('https://evil.example.com/', null);
+        $this->assertIsString($result);
+    }
 }
