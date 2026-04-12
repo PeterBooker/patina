@@ -35,7 +35,8 @@ This project exists to make WordPress faster. Every implementation choice should
 
 - All `#[php_function]` in `lib.rs` — ext-php-rs 0.15 `_internal_*` types must be visible to `wrap_function!()`.
 - Every function wrapped in `panic_guard::guarded()`.
-- Non-pluggable overrides need two variants: `patina_foo` (raw) and `patina_foo_filtered` (with `apply_filters` callback). Add filtered variant to `OVERRIDES` array.
+- Non-pluggable overrides go through the always-shim pattern: write a `patina_foo_internal(...)` Rust function with clean typed params, add a shim entry to `PATINA_SHIMS_PHP` that casts string args via `(string) $x` and forwards to the internal, then register the pair in `SHIM_OVERRIDES`. Never use a direct `OVERRIDES`-style function-table swap — see CLAUDE.md "Function Override Mechanics" for why.
+- Pluggable overrides (MINIT-registered, like `wp_sanitize_redirect`) still need `&Zval` for string params plus `coerce_to_string().unwrap_or_default()` in the body. They can't use the shim pattern because they don't have the pre-compiled-caller problem, but they still need PHP loose-typing compatibility.
 - Function table swap writes `zval.value.ptr` directly. Never use `zend_hash_str_update` — it triggers destructors.
 - No `unwrap()` in patina-ext. Fine in tests and patina-core.
 

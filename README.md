@@ -57,25 +57,23 @@ Patina uses three different mechanisms to replace WordPress core functions, chos
 
 WordPress's pluggable functions (`wp_sanitize_redirect`, `wp_validate_redirect`, etc.) are defined inside `if (!function_exists(...))` blocks. The extension registers these under their original WP names at PHP startup, so by the time `pluggable.php` runs, `function_exists()` is already true and WordPress skips its PHP definition. No bridge, no configuration.
 
-### 2. Direct Zend function table swap
+### 2. PHP user-function shim (non-pluggable functions)
 
-For non-pluggable functions whose signature can be matched exactly by a simple Rust parameter list (e.g. `esc_html(string $text)`), the bridge mu-plugin calls `patina_activate()` after WordPress core loads. That walks an override table and overwrites each target's `zend_function*` pointer in the Zend function table with the Rust implementation. Every subsequent call to `esc_html()` from PHP code dispatches directly to Rust — no PHP wrapper overhead.
-
-### 3. PHP user-function shim
-
-For functions with multi-arg, optional, or mixed-type signatures — `wp_kses($content, $allowed_html, $allowed_protocols = array())` is the canonical example — a direct swap **crashes**. PHP 8.3's Zend compiler specializes call-site opcodes (`INIT_FCALL` / `DO_UCALL`) based on the target function's type at the moment the caller is compiled. When `wp-includes/kses.php` parses `wp_kses_post`, `wp_kses` is a user function, so the bytecode bakes in user-function call-frame semantics. Swapping `wp_kses` to an ext-php-rs internal replacement makes those pre-compiled opcodes crash in `execute_ex` before the Rust handler is even entered.
-
-Patina solves this by defining a **PHP user-function shim** at activation time via `ext_php_rs::php_eval::execute`:
+For non-pluggable targets — `esc_html`, `esc_attr`, `wp_kses`, and friends — patina defines a **PHP user-function shim** at activation time via `ext_php_rs::php_eval::execute`, then swaps the WordPress function-table slot to point at the shim. Each shim forwards to an internal Rust function that holds the real logic:
 
 ```php
 function __patina_wp_kses_shim__($content, $allowed_html, $allowed_protocols = array()) {
-    return patina_wp_kses_internal($content, $allowed_html, $allowed_protocols);
+    return patina_wp_kses_internal((string) $content, $allowed_html, $allowed_protocols);
 }
 ```
 
-The function table slot for `wp_kses` is then swapped to point at the shim. Pre-compiled callers like `wp_kses_post` dispatch user→user (safe — the shim is a real user function); the shim itself dispatches user→internal (safe — the shim's own body was compiled *after* `patina_wp_kses_internal` was registered, so its `INIT_FCALL` uses internal-dispatch semantics). Overhead is one extra PHP frame per call, measured at under 1µs — negligible next to the Rust speedup.
+The shim layer serves two purposes at once:
 
-This shim mechanism is what enables `wp_kses` and every function that calls it (`wp_kses_post`, `wp_filter_post_kses`, `wp_kses_data`, …) to route through Rust without any PHP-side wrapper code. The single `wp_kses` override catches the entire family, including the save pipeline.
+1. **User→user dispatch stays valid for pre-compiled callers.** PHP 8.3's Zend compiler specializes call-site opcodes (`INIT_FCALL` / `DO_UCALL`) based on the target function's type at the moment the caller is compiled. When `wp-includes/kses.php` parses `wp_kses_post`, `wp_kses` is a user function — so the bytecode bakes in user-function call-frame semantics. A direct swap to an ext-php-rs internal function crashes those pre-compiled opcodes in `execute_ex`. Because our shim *is* a real PHP user function, that dispatch stays valid. The shim's own body was compiled *after* `patina_wp_kses_internal` was registered, so its own `INIT_FCALL` uses internal-dispatch semantics cleanly.
+
+2. **`(string)` cast handles PHP's loose typing.** Stock PHP's `esc_html()` / `htmlspecialchars()` / `wp_kses()` are untyped and internally coerce any scalar to a string via `zval_get_string()`. ext-php-rs's `&str` parameter extractor is strict and rejects non-string zvals, throwing `Invalid value given for argument`. Moving the coercion into the PHP shim with a `(string) $x` cast reproduces stock WordPress behavior for every scalar type (int, float, bool, null), while keeping the Rust internal function strictly typed.
+
+The single `wp_kses` shim transparently catches every wrapper that calls `wp_kses` internally — `wp_kses_post`, `wp_kses_data`, `wp_filter_post_kses` (the save pipeline), `wp_filter_kses`, `wp_filter_nohtml_kses`, `wp_kses_post_deep` — without any per-wrapper configuration. Overhead is one extra PHP frame per call, measured at ~300–1000 ns depending on input size, invisible next to Rust speedups of 4–7×.
 
 ### Filter compatibility
 
