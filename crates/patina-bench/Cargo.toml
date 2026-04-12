@@ -11,6 +11,10 @@ harness = false
 name = "escaping"
 harness = false
 
+[[bench]]
+name = "kses"
+harness = false
+
 [dependencies]
 patina-core = { path = "../patina-core" }
 criterion = "0.5"

@@ -3,14 +3,30 @@ paths:
   - "php/**/*.php"
   - "php/composer.json"
   - "php/phpunit.xml"
+  - "php/tests-integration/**/*.php"
+  - "php/tests-integration/phpunit.xml"
 ---
 
 # PHP Rules
 
 ## Tests
 
-- Test classes extend `FixtureTestCase`, use `fixturesAsProvider()` for data-driven tests.
+Two separate suites — pick based on what you're testing:
+
+### Unit tests (`php/tests/`, run via `make test-php`)
+- No WordPress loaded. Dev container with only the patina extension.
+- Test classes extend `Patina\Tests\FixtureTestCase`, use `fixturesAsProvider()` for data-driven tests.
 - Fuzz tests use `mb_str_split` on a character pool — NOT `random_bytes` (ext-php-rs rejects invalid UTF-8).
+- Good for: pure Rust-function behavior, fixtures, smoke tests on the extension itself.
+
+### Integration tests (`php/tests-integration/`, run via `make test-integration`)
+- Full WordPress loaded via `wp-load.php` in the profiling stack's php-fpm container.
+- Test classes extend `Patina\Tests\Integration\IntegrationTestCase` (explicitly `require`d in the bootstrap — they're outside the composer PSR-4 namespace).
+- Use `$this->add_test_filter($tag, $callback)` instead of `add_filter()` directly — the base class tracks and removes each filter in tearDown, so test A's filters never leak into test B and WP's default filters (e.g. `wp_pre_kses_less_than` on `pre_kses`) are left untouched.
+- Good for: verifying plugin/theme compatibility — anything that uses `apply_filters()`, `add_filter()`, `do_action()`, or depends on WP globals like `$allowedposttags`.
+- **Required reading when overriding a function with filter hooks**: add tests that register a real filter and assert the filter's observable effect. See `KsesFilterTest` for the reference pattern.
+
+General:
 - No `composer.lock` committed. CI uses `composer update` to resolve per PHP version.
 
 ## Fixtures
@@ -28,3 +44,9 @@ paths:
 
 - Reference WordPress implementations (verbatim copies) in `php/benchmarks/reference/`.
 - Harness in `Runner.php` reports per-function speedup.
+
+## After every change
+
+Run `make test-php` before reporting a task as done. Do not skip this.
+
+If the change touches a function that interacts with WordPress filters/hooks (anything in the `wp_kses`/`esc_*`/`wp_filter_*` family), also run `make test-integration` and add a new integration test covering the filter path you changed.

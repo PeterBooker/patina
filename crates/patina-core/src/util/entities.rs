@@ -103,6 +103,30 @@ fn is_allowed_entity_name(name: &[u8]) -> bool {
         .is_ok()
 }
 
+/// Push an entity to a result string, normalizing decimal numeric entities.
+///
+/// WordPress's `wp_kses_normalize_entities()` zero-pads decimal numeric
+/// entities to at least 3 digits: `&#38;` → `&#038;`, `&#1;` → `&#001;`.
+/// Named entities (`&amp;`) and hex entities (`&#x41;`) are unchanged.
+pub fn push_normalized_entity(result: &mut String, entity: &str) {
+    let bytes = entity.as_bytes();
+    // Check for decimal numeric entity: &#NNN;
+    if bytes.len() >= 4 && bytes[1] == b'#' && bytes[2] != b'x' && bytes[2] != b'X' {
+        let digits = &entity[2..entity.len() - 1];
+        if digits.len() < 3 {
+            result.push_str("&#");
+            for _ in 0..3 - digits.len() {
+                result.push('0');
+            }
+            result.push_str(digits);
+            result.push(';');
+            return;
+        }
+    }
+    // Named entity, hex entity, or already 3+ digits — copy as-is
+    result.push_str(entity);
+}
+
 /// WordPress's `$allowedentitynames` — 253 HTML entity names.
 /// Sorted for binary search.
 const ALLOWED_ENTITY_NAMES: &[&str] = &[
