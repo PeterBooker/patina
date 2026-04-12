@@ -14,3 +14,4 @@ name = "patina"
 [dependencies]
 patina-core = { path = "../patina-core" }
 ext-php-rs = "0.15"
+serde_json = { version = "1", features = ["preserve_order"] }

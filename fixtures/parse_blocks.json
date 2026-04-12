@@ -1,0 +1,765 @@
+[
+    {
+        "input": [
+            ""
+        ],
+        "output": []
+    },
+    {
+        "input": [
+            "plain text without any blocks"
+        ],
+        "output": [
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "plain text without any blocks",
+                "innerContent": [
+                    "plain text without any blocks"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "   \\n\\t   "
+        ],
+        "output": [
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "   \\n\\t   ",
+                "innerContent": [
+                    "   \\n\\t   "
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:separator \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/separator",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:spacer \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/spacer",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:nextpage \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/nextpage",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:image {\"id\":42,\"sizeSlug\":\"large\",\"linkDestination\":\"none\"} \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/image",
+                "attrs": {
+                    "id": 42,
+                    "sizeSlug": "large",
+                    "linkDestination": "none"
+                },
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:spacer {\"height\":\"50px\"} \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/spacer",
+                "attrs": {
+                    "height": "50px"
+                },
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:paragraph --><p>Hello, world.<\/p><!-- \/wp:paragraph -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>Hello, world.<\/p>",
+                "innerContent": [
+                    "<p>Hello, world.<\/p>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:heading --><h2>A heading<\/h2><!-- \/wp:heading -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/heading",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<h2>A heading<\/h2>",
+                "innerContent": [
+                    "<h2>A heading<\/h2>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:heading {\"level\":3} --><h3>Level 3 heading<\/h3><!-- \/wp:heading -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/heading",
+                "attrs": {
+                    "level": 3
+                },
+                "innerBlocks": [],
+                "innerHTML": "<h3>Level 3 heading<\/h3>",
+                "innerContent": [
+                    "<h3>Level 3 heading<\/h3>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:paragraph --><p>One<\/p><!-- \/wp:paragraph --><!-- wp:paragraph --><p>Two<\/p><!-- \/wp:paragraph -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>One<\/p>",
+                "innerContent": [
+                    "<p>One<\/p>"
+                ]
+            },
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>Two<\/p>",
+                "innerContent": [
+                    "<p>Two<\/p>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "prefix<!-- wp:separator \/-->"
+        ],
+        "output": [
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "prefix",
+                "innerContent": [
+                    "prefix"
+                ]
+            },
+            {
+                "blockName": "core\/separator",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:separator \/-->suffix"
+        ],
+        "output": [
+            {
+                "blockName": "core\/separator",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            },
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "suffix",
+                "innerContent": [
+                    "suffix"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "before<!-- wp:separator \/-->middle<!-- wp:separator \/-->after"
+        ],
+        "output": [
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "before",
+                "innerContent": [
+                    "before"
+                ]
+            },
+            {
+                "blockName": "core\/separator",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            },
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "middle",
+                "innerContent": [
+                    "middle"
+                ]
+            },
+            {
+                "blockName": "core\/separator",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            },
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "after",
+                "innerContent": [
+                    "after"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "just text before<!-- wp:paragraph --><p>block<\/p><!-- \/wp:paragraph -->just text after"
+        ],
+        "output": [
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "just text before",
+                "innerContent": [
+                    "just text before"
+                ]
+            },
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>block<\/p>",
+                "innerContent": [
+                    "<p>block<\/p>"
+                ]
+            },
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "just text after",
+                "innerContent": [
+                    "just text after"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:group --><div class=\"wp-block-group\"><!-- wp:paragraph --><p>Nested paragraph<\/p><!-- \/wp:paragraph --><\/div><!-- \/wp:group -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/group",
+                "attrs": [],
+                "innerBlocks": [
+                    {
+                        "blockName": "core\/paragraph",
+                        "attrs": [],
+                        "innerBlocks": [],
+                        "innerHTML": "<p>Nested paragraph<\/p>",
+                        "innerContent": [
+                            "<p>Nested paragraph<\/p>"
+                        ]
+                    }
+                ],
+                "innerHTML": "<div class=\"wp-block-group\"><\/div>",
+                "innerContent": [
+                    "<div class=\"wp-block-group\">",
+                    null,
+                    "<\/div>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:columns --><div class=\"wp-block-columns\"><!-- wp:column --><div class=\"wp-block-column\"><!-- wp:paragraph --><p>Col 1<\/p><!-- \/wp:paragraph --><\/div><!-- \/wp:column --><!-- wp:column --><div class=\"wp-block-column\"><!-- wp:paragraph --><p>Col 2<\/p><!-- \/wp:paragraph --><\/div><!-- \/wp:column --><\/div><!-- \/wp:columns -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/columns",
+                "attrs": [],
+                "innerBlocks": [
+                    {
+                        "blockName": "core\/column",
+                        "attrs": [],
+                        "innerBlocks": [
+                            {
+                                "blockName": "core\/paragraph",
+                                "attrs": [],
+                                "innerBlocks": [],
+                                "innerHTML": "<p>Col 1<\/p>",
+                                "innerContent": [
+                                    "<p>Col 1<\/p>"
+                                ]
+                            }
+                        ],
+                        "innerHTML": "<div class=\"wp-block-column\"><\/div>",
+                        "innerContent": [
+                            "<div class=\"wp-block-column\">",
+                            null,
+                            "<\/div>"
+                        ]
+                    },
+                    {
+                        "blockName": "core\/column",
+                        "attrs": [],
+                        "innerBlocks": [
+                            {
+                                "blockName": "core\/paragraph",
+                                "attrs": [],
+                                "innerBlocks": [],
+                                "innerHTML": "<p>Col 2<\/p>",
+                                "innerContent": [
+                                    "<p>Col 2<\/p>"
+                                ]
+                            }
+                        ],
+                        "innerHTML": "<div class=\"wp-block-column\"><\/div>",
+                        "innerContent": [
+                            "<div class=\"wp-block-column\">",
+                            null,
+                            "<\/div>"
+                        ]
+                    }
+                ],
+                "innerHTML": "<div class=\"wp-block-columns\"><\/div>",
+                "innerContent": [
+                    "<div class=\"wp-block-columns\">",
+                    null,
+                    null,
+                    "<\/div>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:group --><div><!-- wp:group --><div><!-- wp:paragraph --><p>Deep<\/p><!-- \/wp:paragraph --><\/div><!-- \/wp:group --><\/div><!-- \/wp:group -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/group",
+                "attrs": [],
+                "innerBlocks": [
+                    {
+                        "blockName": "core\/group",
+                        "attrs": [],
+                        "innerBlocks": [
+                            {
+                                "blockName": "core\/paragraph",
+                                "attrs": [],
+                                "innerBlocks": [],
+                                "innerHTML": "<p>Deep<\/p>",
+                                "innerContent": [
+                                    "<p>Deep<\/p>"
+                                ]
+                            }
+                        ],
+                        "innerHTML": "<div><\/div>",
+                        "innerContent": [
+                            "<div>",
+                            null,
+                            "<\/div>"
+                        ]
+                    }
+                ],
+                "innerHTML": "<div><\/div>",
+                "innerContent": [
+                    "<div>",
+                    null,
+                    "<\/div>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:my-plugin\/custom-block \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "my-plugin\/custom-block",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:my-plugin\/custom-block {\"foo\":\"bar\"} \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "my-plugin\/custom-block",
+                "attrs": {
+                    "foo": "bar"
+                },
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:acme\/widget --><div class=\"acme-widget\">content<\/div><!-- \/wp:acme\/widget -->"
+        ],
+        "output": [
+            {
+                "blockName": "acme\/widget",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<div class=\"acme-widget\">content<\/div>",
+                "innerContent": [
+                    "<div class=\"acme-widget\">content<\/div>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:group {\"style\":{\"spacing\":{\"padding\":{\"top\":\"10px\",\"bottom\":\"20px\"}},\"color\":{\"background\":\"#ffffff\"}}} --><div>styled group<\/div><!-- \/wp:group -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/group",
+                "attrs": {
+                    "style": {
+                        "spacing": {
+                            "padding": {
+                                "top": "10px",
+                                "bottom": "20px"
+                            }
+                        },
+                        "color": {
+                            "background": "#ffffff"
+                        }
+                    }
+                },
+                "innerBlocks": [],
+                "innerHTML": "<div>styled group<\/div>",
+                "innerContent": [
+                    "<div>styled group<\/div>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:image {\"id\":1,\"sizeSlug\":\"full\",\"linkDestination\":\"none\",\"align\":\"wide\",\"className\":\"is-style-rounded\"} \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/image",
+                "attrs": {
+                    "id": 1,
+                    "sizeSlug": "full",
+                    "linkDestination": "none",
+                    "align": "wide",
+                    "className": "is-style-rounded"
+                },
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:list {\"ordered\":true,\"values\":\"<li>one<\/li><li>two<\/li>\"} -->x<!-- \/wp:list -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/list",
+                "attrs": {
+                    "ordered": true,
+                    "values": "<li>one<\/li><li>two<\/li>"
+                },
+                "innerBlocks": [],
+                "innerHTML": "x",
+                "innerContent": [
+                    "x"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:separator {\"opacity\":\"css\",\"className\":\"is-style-wide\"} \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/separator",
+                "attrs": {
+                    "opacity": "css",
+                    "className": "is-style-wide"
+                },
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:embed {\"url\":\"https:\/\/example.com\/video\",\"type\":\"video\",\"providerNameSlug\":\"vimeo\",\"responsive\":true} \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/embed",
+                "attrs": {
+                    "url": "https:\/\/example.com\/video",
+                    "type": "video",
+                    "providerNameSlug": "vimeo",
+                    "responsive": true
+                },
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:paragraph --><p>Introduction paragraph.<\/p><!-- \/wp:paragraph --><!-- wp:heading --><h2>Section 1<\/h2><!-- \/wp:heading --><!-- wp:paragraph --><p>Body text goes here.<\/p><!-- \/wp:paragraph --><!-- wp:separator \/--><!-- wp:paragraph --><p>After the separator.<\/p><!-- \/wp:paragraph -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>Introduction paragraph.<\/p>",
+                "innerContent": [
+                    "<p>Introduction paragraph.<\/p>"
+                ]
+            },
+            {
+                "blockName": "core\/heading",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<h2>Section 1<\/h2>",
+                "innerContent": [
+                    "<h2>Section 1<\/h2>"
+                ]
+            },
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>Body text goes here.<\/p>",
+                "innerContent": [
+                    "<p>Body text goes here.<\/p>"
+                ]
+            },
+            {
+                "blockName": "core\/separator",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            },
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>After the separator.<\/p>",
+                "innerContent": [
+                    "<p>After the separator.<\/p>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:code --><pre class=\"wp-block-code\"><code>if (x &lt; y) { ... }<\/code><\/pre><!-- \/wp:code -->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/code",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<pre class=\"wp-block-code\"><code>if (x &lt; y) { ... }<\/code><\/pre>",
+                "innerContent": [
+                    "<pre class=\"wp-block-code\"><code>if (x &lt; y) { ... }<\/code><\/pre>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:separator \/--><!-- wp:spacer \/--><!-- wp:separator \/-->"
+        ],
+        "output": [
+            {
+                "blockName": "core\/separator",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            },
+            {
+                "blockName": "core\/spacer",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            },
+            {
+                "blockName": "core\/separator",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "",
+                "innerContent": []
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- this is just a regular HTML comment --><!-- wp:paragraph --><p>real block<\/p><!-- \/wp:paragraph -->"
+        ],
+        "output": [
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<!-- this is just a regular HTML comment -->",
+                "innerContent": [
+                    "<!-- this is just a regular HTML comment -->"
+                ]
+            },
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>real block<\/p>",
+                "innerContent": [
+                    "<p>real block<\/p>"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "text with <!-- wp:not-quite \/> not a real close"
+        ],
+        "output": [
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "text with <!-- wp:not-quite \/> not a real close",
+                "innerContent": [
+                    "text with <!-- wp:not-quite \/> not a real close"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<!-- wp:paragraph --><p>Dangling with no closer"
+        ],
+        "output": [
+            {
+                "blockName": "core\/paragraph",
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>Dangling with no closer",
+                "innerContent": [
+                    "<p>Dangling with no closer"
+                ]
+            }
+        ]
+    },
+    {
+        "input": [
+            "<p>Orphan content<\/p><!-- \/wp:paragraph -->"
+        ],
+        "output": [
+            {
+                "blockName": null,
+                "attrs": [],
+                "innerBlocks": [],
+                "innerHTML": "<p>Orphan content<\/p><!-- \/wp:paragraph -->",
+                "innerContent": [
+                    "<p>Orphan content<\/p><!-- \/wp:paragraph -->"
+                ]
+            }
+        ]
+    }
+]

@@ -11,9 +11,10 @@
  * Must be run within a WordPress environment (the profiling Docker stack).
  */
 
-// Ensure we're in a WordPress context
-if (!function_exists('wp_sanitize_redirect')) {
-    // Try to bootstrap WordPress
+// Ensure we're in a WordPress context. We can't check for a specific WP
+// function here because patina-ext registers some of them — check for
+// ABSPATH instead, which is only defined by wp-load.php itself.
+if (!defined('ABSPATH')) {
     $wp_load = getenv('WP_LOAD_PATH') ?: '/var/www/html/wp-load.php';
     if (file_exists($wp_load)) {
         require_once $wp_load;
