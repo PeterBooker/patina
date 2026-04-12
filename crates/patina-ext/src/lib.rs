@@ -1,13 +1,15 @@
+use ext_php_rs::boxed::ZBox;
 use ext_php_rs::call_user_func;
 use ext_php_rs::ffi::{
     ext_php_rs_executor_globals, zend_fetch_function_str, zend_function, zend_hash_str_find,
 };
 use ext_php_rs::prelude::*;
-use ext_php_rs::types::Zval;
+use ext_php_rs::types::{ZendHashTable, Zval};
 
 use std::ffi::c_char;
 use std::sync::Mutex;
 
+mod blocks_bridge;
 mod kses_bridge;
 mod panic_guard;
 pub mod php_callback;
@@ -55,6 +57,7 @@ const SHIM_OVERRIDES: &[(&str, &str)] = &[
     ("esc_html", "__patina_esc_html_shim__"),
     ("esc_attr", "__patina_esc_attr_shim__"),
     ("wp_kses", "__patina_wp_kses_shim__"),
+    ("parse_blocks", "__patina_parse_blocks_shim__"),
 ];
 
 /// PHP source for all shims. Compiled and executed once by
@@ -65,7 +68,9 @@ const SHIM_OVERRIDES: &[(&str, &str)] = &[
 /// - applies `(string)` to string-typed params so the Rust internal
 ///   function can keep a clean `&str` signature,
 /// - forwards polymorphic params (like `$allowed_html` in `wp_kses`,
-///   which is string-or-array) as-is.
+///   which is string-or-array) as-is,
+/// - honors any WordPress filter that lets plugins swap the underlying
+///   implementation class (as `parse_blocks` does with `block_parser_class`).
 const PATINA_SHIMS_PHP: &str = r#"<?php
 function __patina_esc_html_shim__($text) {
     return patina_esc_html_internal((string) $text);
@@ -75,6 +80,18 @@ function __patina_esc_attr_shim__($text) {
 }
 function __patina_wp_kses_shim__($content, $allowed_html, $allowed_protocols = array()) {
     return patina_wp_kses_internal((string) $content, $allowed_html, $allowed_protocols);
+}
+function __patina_parse_blocks_shim__($content) {
+    // WP stock parse_blocks() fires this filter to let plugins swap in
+    // their own parser class. If anything other than the default is
+    // returned we must fall back to the PHP implementation so plugin
+    // custom parsers keep working.
+    $parser_class = apply_filters('block_parser_class', 'WP_Block_Parser');
+    if ($parser_class !== 'WP_Block_Parser') {
+        $parser = new $parser_class();
+        return $parser->parse((string) $content);
+    }
+    return patina_parse_blocks_internal((string) $content);
 }
 "#;
 
@@ -469,6 +486,29 @@ pub fn patina_wp_kses_internal(
 }
 
 // ============================================================================
+// Block parser — shim trampoline target
+// ============================================================================
+
+/// parse_blocks internal. Called from `__patina_parse_blocks_shim__`.
+///
+/// Returns a PHP array of block associative arrays matching the exact
+/// shape WordPress's `parse_blocks()` produces — each element has keys
+/// `blockName`, `attrs`, `innerBlocks`, `innerHTML`, `innerContent` in
+/// that order.
+///
+/// The shim handles the `block_parser_class` filter at the PHP layer —
+/// when a plugin swaps in a custom parser class, the shim falls back
+/// to instantiating it and never reaches this function. When this
+/// function runs, we know we can use the Rust parser safely.
+#[php_function]
+pub fn patina_parse_blocks_internal(content: &str) -> PhpResult<ZBox<ZendHashTable>> {
+    panic_guard::guarded("parse_blocks", || {
+        let blocks = patina_core::blocks::parse_blocks(content);
+        blocks_bridge::blocks_to_php_array(&blocks)
+    })
+}
+
+// ============================================================================
 // Module registration
 // ============================================================================
 
@@ -490,6 +530,8 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         // kses
         .function(wrap_function!(patina_wp_kses_post))
         .function(wrap_function!(patina_wp_kses_internal))
+        // block parser
+        .function(wrap_function!(patina_parse_blocks_internal))
         // pluggable
         .function(wrap_function!(wp_sanitize_redirect))
         .function(wrap_function!(wp_validate_redirect))
