@@ -4,11 +4,11 @@ set -euo pipefail
 # Patina installer — downloads the correct pre-built extension for your system.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/<org>/patina/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/PeterBooker/patina/main/install.sh | bash
 #   ./install.sh                    # Latest release
 #   ./install.sh v0.1.0             # Specific version
 
-REPO="<org>/patina"
+REPO="PeterBooker/patina"
 VERSION="${1:-latest}"
 
 # --- Detect environment ---
