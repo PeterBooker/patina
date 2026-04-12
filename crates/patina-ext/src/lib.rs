@@ -220,16 +220,18 @@ pub fn patina_loaded() -> bool {
 // ============================================================================
 
 #[php_function]
-pub fn patina_esc_html(text: &str) -> PhpResult<String> {
+pub fn patina_esc_html(text: &Zval) -> PhpResult<String> {
+    let text_str = text.coerce_to_string().unwrap_or_default();
     panic_guard::guarded("patina_esc_html", || {
-        patina_core::escaping::esc_html(text).into_owned()
+        patina_core::escaping::esc_html(&text_str).into_owned()
     })
 }
 
 #[php_function]
-pub fn patina_esc_attr(text: &str) -> PhpResult<String> {
+pub fn patina_esc_attr(text: &Zval) -> PhpResult<String> {
+    let text_str = text.coerce_to_string().unwrap_or_default();
     panic_guard::guarded("patina_esc_attr", || {
-        patina_core::escaping::esc_attr(text).into_owned()
+        patina_core::escaping::esc_attr(&text_str).into_owned()
     })
 }
 
@@ -239,10 +241,19 @@ pub fn patina_esc_attr(text: &str) -> PhpResult<String> {
 
 /// esc_html replacement that calls apply_filters('esc_html', $result, $text).
 /// This is what gets swapped into the function table for esc_html().
+///
+/// Accepts `&Zval` rather than `&str` so that non-string scalars (int,
+/// float, bool, null) are coerced to a string the same way stock PHP's
+/// `esc_html()` / `htmlspecialchars()` do. Without this, wp-admin screens
+/// that call `esc_html($integer)` — e.g. pagination controls — throw
+/// "Invalid value given for argument `text`" from ext-php-rs's strict
+/// parameter parsing.
 #[php_function]
-pub fn patina_esc_html_filtered(text: &str) -> PhpResult<String> {
+pub fn patina_esc_html_filtered(text: &Zval) -> PhpResult<String> {
+    let text_str = text.coerce_to_string().unwrap_or_default();
+
     let safe_text = panic_guard::guarded("esc_html", || {
-        patina_core::escaping::esc_html(text).into_owned()
+        patina_core::escaping::esc_html(&text_str).into_owned()
     })?;
 
     // Call apply_filters('esc_html', $safe_text, $text) — matching WordPress behavior
@@ -250,24 +261,28 @@ pub fn patina_esc_html_filtered(text: &str) -> PhpResult<String> {
     func.set_string("apply_filters", false)
         .map_err(|e| PhpException::default(format!("patina: apply_filters setup: {e}")))?;
 
-    match call_user_func!(func, "esc_html", safe_text.as_str(), text) {
+    match call_user_func!(func, "esc_html", safe_text.as_str(), text_str.as_str()) {
         Ok(result) => Ok(result.string().unwrap_or(safe_text)),
         Err(_) => Ok(safe_text),
     }
 }
 
 /// esc_attr replacement that calls apply_filters('esc_attr', $result, $text).
+///
+/// Accepts `&Zval` for PHP loose-typing compatibility — see `patina_esc_html_filtered`.
 #[php_function]
-pub fn patina_esc_attr_filtered(text: &str) -> PhpResult<String> {
+pub fn patina_esc_attr_filtered(text: &Zval) -> PhpResult<String> {
+    let text_str = text.coerce_to_string().unwrap_or_default();
+
     let safe_text = panic_guard::guarded("esc_attr", || {
-        patina_core::escaping::esc_attr(text).into_owned()
+        patina_core::escaping::esc_attr(&text_str).into_owned()
     })?;
 
     let mut func = Zval::new();
     func.set_string("apply_filters", false)
         .map_err(|e| PhpException::default(format!("patina: apply_filters setup: {e}")))?;
 
-    match call_user_func!(func, "esc_attr", safe_text.as_str(), text) {
+    match call_user_func!(func, "esc_attr", safe_text.as_str(), text_str.as_str()) {
         Ok(result) => Ok(result.string().unwrap_or(safe_text)),
         Err(_) => Ok(safe_text),
     }
@@ -278,15 +293,27 @@ pub fn patina_esc_attr_filtered(text: &str) -> PhpResult<String> {
 // ============================================================================
 
 #[php_function]
-pub fn wp_sanitize_redirect(location: &str) -> PhpResult<String> {
+pub fn wp_sanitize_redirect(location: &Zval) -> PhpResult<String> {
+    // PHP's wp_sanitize_redirect is untyped; callers pass whatever WP hands
+    // them (strings from $_REQUEST, or sometimes bool/null from functions
+    // like wp_get_referer). Coerce to match stock PHP's loose behavior.
+    let location_str = location.coerce_to_string().unwrap_or_default();
     panic_guard::guarded("wp_sanitize_redirect", || {
-        patina_core::pluggable::sanitize_redirect(location)
+        patina_core::pluggable::sanitize_redirect(&location_str)
     })
 }
 
 #[php_function]
-pub fn wp_validate_redirect(location: &str, fallback_url: &str) -> PhpResult<String> {
-    let trimmed = location.trim_matches(&[' ', '\t', '\n', '\r', '\0', '\x08', '\x0B'][..]);
+pub fn wp_validate_redirect(location: &Zval, fallback_url: Option<&Zval>) -> PhpResult<String> {
+    // Match PHP's `function wp_validate_redirect( $location, $fallback_url = '' )`:
+    // - both params untyped (coerce_to_string for loose-typing compat)
+    // - fallback_url is optional with default ''
+    let location_str = location.coerce_to_string().unwrap_or_default();
+    let fallback_str = fallback_url
+        .and_then(|z| z.coerce_to_string())
+        .unwrap_or_default();
+
+    let trimmed = location_str.trim_matches(&[' ', '\t', '\n', '\r', '\0', '\x08', '\x0B'][..]);
     let sanitized = patina_core::pluggable::sanitize_redirect(trimmed);
 
     let home_host = {
@@ -319,7 +346,7 @@ pub fn wp_validate_redirect(location: &str, fallback_url: &str) -> PhpResult<Str
         request_uri.as_deref(),
     ) {
         patina_core::pluggable::ValidateResult::Valid(loc) => Ok(loc),
-        patina_core::pluggable::ValidateResult::Fallback => Ok(fallback_url.to_string()),
+        patina_core::pluggable::ValidateResult::Fallback => Ok(fallback_str),
     }
 }
 
@@ -390,9 +417,10 @@ fn get_server_var(_key: &str) -> Option<String> {
 
 /// wp_kses_post raw — no filters, for direct use and benchmarking.
 #[php_function]
-pub fn patina_wp_kses_post(content: &str) -> PhpResult<String> {
+pub fn patina_wp_kses_post(content: &Zval) -> PhpResult<String> {
+    let content_str = content.coerce_to_string().unwrap_or_default();
     panic_guard::guarded("patina_wp_kses_post", || {
-        patina_core::kses::wp_kses_post(content)
+        patina_core::kses::wp_kses_post(&content_str)
     })
 }
 
@@ -416,11 +444,17 @@ pub fn patina_wp_kses_post(content: &str) -> PhpResult<String> {
 /// 5. Runs the Rust sanitization pipeline.
 #[php_function]
 pub fn patina_wp_kses_internal(
-    content: &str,
+    content: &Zval,
     allowed_html: &Zval,
     allowed_protocols: &Zval,
 ) -> PhpResult<String> {
-    let filtered_content = kses_bridge::apply_pre_kses(content, allowed_html, allowed_protocols);
+    // PHP's wp_kses accepts any scalar — coerce here so int/float/bool/null
+    // callers (which stock PHP handles transparently) don't trip the strict
+    // ext-php-rs parameter parser.
+    let content_str = content.coerce_to_string().unwrap_or_default();
+
+    let filtered_content =
+        kses_bridge::apply_pre_kses(&content_str, allowed_html, allowed_protocols);
 
     let spec_ref = kses_bridge::resolve_allowed_html(allowed_html);
     let protocols_ref = kses_bridge::resolve_protocols(allowed_protocols);
