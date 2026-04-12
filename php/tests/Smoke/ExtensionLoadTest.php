@@ -32,6 +32,8 @@ class ExtensionLoadTest extends TestCase
             'patina_loaded',
             'patina_esc_html',
             'patina_esc_attr',
+            'patina_esc_html_internal',
+            'patina_esc_attr_internal',
             'patina_wp_kses_post',
             'patina_wp_kses_internal',
             'wp_sanitize_redirect',
@@ -45,10 +47,11 @@ class ExtensionLoadTest extends TestCase
 
     public function test_patina_wp_kses_internal_strips_script(): void
     {
-        // Smoke test the override path: no WP functions are loaded here, so the
-        // bridge falls through to its hardcoded defaults (post spec, default
-        // protocols and URI attributes). Verifies the filter lookup code path
-        // doesn't crash when has_filter/apply_filters are absent.
+        // Smoke test the shim trampoline target: no WP functions are loaded
+        // here, so the kses bridge falls through to its hardcoded defaults
+        // (post spec, default protocols and URI attributes). Verifies the
+        // filter lookup code path doesn't crash when has_filter/apply_filters
+        // are absent.
         $result = patina_wp_kses_internal('<b>ok</b><script>alert(1)</script>', 'post', null);
         $this->assertStringContainsString('<b>ok</b>', $result);
         $this->assertStringNotContainsString('<script>', $result);
