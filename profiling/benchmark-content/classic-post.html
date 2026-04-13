@@ -1,0 +1,12 @@
+<p>This is a <strong>classic</strong> (pre-Gutenberg) post — no block delimiters, just raw HTML. It exercises the <code>wpautop</code> path and the render-time kses pass that runs on classic content, neither of which touches <code>parse_blocks</code> because the grammar parser short-circuits to a single <code>core/freeform</code> block when there are no delimiters.</p>
+
+<p>Classic posts are rare in new content but extremely common in archive scans of older sites. Many production WordPress installs still have tens of thousands of pre-2018 posts that have never been touched since the Gutenberg migration, and WP renders them through the same wpautop → kses pipeline on every pageload.</p>
+
+<ul>
+<li>No block markup</li>
+<li>Exercises wpautop on newlines</li>
+<li>Still hits render-time kses for allowed tags</li>
+<li>Used by the classic-post scenario in the HTTP bench</li>
+</ul>
+
+<p>Special chars: &amp; &lt; &gt; "quoted" and <a href="https://example.com/">a link</a>.</p>

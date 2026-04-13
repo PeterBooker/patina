@@ -24,9 +24,28 @@ make build             # Release .so
 make bench             # PHP benchmarks (Rust vs PHP)
 make bench-wp          # WP-backed benchmarks (kses + friends)
 make bench-jit         # With JIT enabled
+make bench-http        # HTTP-level bench (k6 TTFB per scenario)
 make verify            # Load extension, print functions
 make shell             # Dev container shell
 ```
+
+### Per-override toggles
+
+The bridge mu-plugin honors a set of env vars / PHP constants that skip
+individual overrides at activation time. Useful for A/B decomposition
+during benchmarking without rebuilding the `.so`:
+
+| Flag | Skips |
+|---|---|
+| `PATINA_DISABLE` | everything (kill switch) |
+| `PATINA_DISABLE_ESC` | `esc_html` + `esc_attr` |
+| `PATINA_DISABLE_KSES` | `wp_kses` and every wrapper |
+| `PATINA_DISABLE_PARSE_BLOCKS` | `parse_blocks` |
+
+Each flag works as either a shell env var (`PATINA_DISABLE_KSES=1 php-fpm ...`)
+or a PHP constant defined before mu-plugins load. Under the hood the bridge
+builds a PHP array of WordPress function names and passes it as
+`patina_activate($skip_list)` — direct callers can do the same.
 
 Target PHP version: `PHP_VERSION=8.1 make build`
 

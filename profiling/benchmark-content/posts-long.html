@@ -1,0 +1,111 @@
+<!-- wp:heading -->
+<h2 class="wp-block-heading">A long-form block post — the parse_blocks win zone</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>This fixture targets eight kilobytes of body content with deep block nesting — the scenario where <code>parse_blocks</code> spends real time and therefore where a native Rust replacement should show the biggest absolute win. Eight kilobytes is the upper tail of "normal" blog content: long opinion pieces, tutorial walkthroughs, detailed release notes, conference write-ups. Content above this size is rare enough in practice that optimizing it further has diminishing real-world impact.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section one — nesting for days</h3>
+<!-- /wp:heading -->
+
+<!-- wp:group -->
+<div class="wp-block-group">
+<!-- wp:paragraph --><p>This whole section is wrapped in a <code>core/group</code>. Groups are the most common nesting block in modern WP themes — they're how FSE patterns compose, how cover blocks contain their children, and how full-site templates wrap entry content. If the Rust parser is slow on groups, it's slow on everything.</p><!-- /wp:paragraph -->
+
+<!-- wp:columns -->
+<div class="wp-block-columns">
+<!-- wp:column -->
+<div class="wp-block-column">
+<!-- wp:heading {"level":4} --><h4 class="wp-block-heading">Left rail</h4><!-- /wp:heading -->
+<!-- wp:paragraph --><p>Column one is the left rail. In a realistic theme this would hold a table of contents, or maybe a sticky author card. We use it to hold more text because the goal is byte-count pressure, not design fidelity.</p><!-- /wp:paragraph -->
+<!-- wp:list --><ul><li>List item one — deeply nested inside column one inside a columns block inside a group</li><li>List item two with a <a href="https://example.com/nested">nested link</a></li><li>List item three with <code>inline code</code> and <strong>bold</strong></li></ul><!-- /wp:list -->
+</div>
+<!-- /wp:column -->
+
+<!-- wp:column -->
+<div class="wp-block-column">
+<!-- wp:heading {"level":4} --><h4 class="wp-block-heading">Right rail</h4><!-- /wp:heading -->
+<!-- wp:paragraph --><p>Column two is the right rail. Four levels deep: group → columns → column → paragraph. This is the nesting depth the real-world corpus hits most often — deeper than this and you're in patterns/templates, not post content.</p><!-- /wp:paragraph -->
+<!-- wp:quote --><blockquote class="wp-block-quote"><p>"Depth matters more than count. A flat list of 100 paragraphs is easier to parse than 10 paragraphs wrapped in 5 layers of groups."</p></blockquote><!-- /wp:quote -->
+</div>
+<!-- /wp:column -->
+</div>
+<!-- /wp:columns -->
+</div>
+<!-- /wp:group -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section two — block variety</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>The block grammar has roughly a dozen core blocks that appear in nearly every post. Below we cycle through them so the Rust parser exercises every branch of the top-level dispatch: paragraph, heading, list, quote, code, preformatted, table, separator, spacer, image caption, group, columns. The pattern repeats because block frequency is heavily zipfian — paragraphs dominate by a factor of ten, lists and headings are the next tier, and everything else is a long tail.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Another paragraph. Patina's shim layer adds one PHP frame per call, which shows up as ~500 nanoseconds of overhead per <code>parse_blocks</code> invocation — effectively free next to the multi-millisecond body of the function itself. The worry isn't shim overhead on this path; the worry is whether the Rust parser matches WP's exact output shape including innerContent placeholders.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul>
+<li>Paragraphs are the most common block</li>
+<li>Lists are the second most common</li>
+<li>Headings are the third</li>
+<li>Everything else is a long tail of occasional use</li>
+<li>Groups and columns dominate the <em>nesting</em> distribution</li>
+<li>Cover blocks appear once per post when used at all</li>
+<li>Embeds round out the top ten</li>
+</ul>
+<!-- /wp:list -->
+
+<!-- wp:quote -->
+<blockquote class="wp-block-quote">
+<p>"If you parse the ninety-fifth percentile post in under a millisecond, you've already won — the remaining five percent are rounding error on the average pageload."</p>
+<cite>— Nobody specific, but it sounds right</cite>
+</blockquote>
+<!-- /wp:quote -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>fn parse_blocks(input: &amp;str) -&gt; Vec&lt;Block&gt; {
+    // Recursive descent over the block grammar.
+    // Byte-for-byte match with wp-includes/class-wp-block-parser.php.
+    let mut parser = Parser::new(input);
+    let mut out = Vec::new();
+    while let Some(block) = parser.next_block() {
+        out.push(block);
+    }
+    out
+}
+</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:preformatted -->
+<pre class="wp-block-preformatted">Preformatted text is the one block that preserves whitespace.
+    Indented line one.
+    Indented line two.
+It's rare in practice but included here for coverage.</pre>
+<!-- /wp:preformatted -->
+
+<!-- wp:separator -->
+<hr class="wp-block-separator has-alpha-channel-opacity"/>
+<!-- /wp:separator -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section three — tables and closing</h3>
+<!-- /wp:heading -->
+
+<!-- wp:table -->
+<figure class="wp-block-table"><table><thead><tr><th>Scenario</th><th>Target block</th><th>Expected delta</th></tr></thead><tbody>
+<tr><td>Homepage (latest 10)</td><td>parse_blocks x10</td><td>moderate</td></tr>
+<tr><td>Long single post</td><td>parse_blocks x1</td><td>high</td></tr>
+<tr><td>Archive page</td><td>parse_blocks xN</td><td>moderate</td></tr>
+<tr><td>Search results</td><td>parse_blocks xN (excerpts)</td><td>low</td></tr>
+<tr><td>REST API /wp/v2/posts</td><td>parse_blocks xN</td><td>high</td></tr>
+</tbody></table></figure>
+<!-- /wp:table -->
+
+<!-- wp:paragraph -->
+<p>Closing paragraph: the long fixture is deliberately closer to the upper tail of body sizes than a typical post, because it's the scenario where <strong>parse_blocks</strong> spends enough absolute time for a speedup to dominate the per-request overhead of the extension's activation path. Measuring the win zone matters more than measuring the median.</p>
+<!-- /wp:paragraph -->

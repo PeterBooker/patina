@@ -36,22 +36,8 @@ echo "=== Configuring WordPress ==="
 $COMPOSE exec php-fpm $WP rewrite structure '/%postname%/' --path=/var/www/html
 $COMPOSE exec php-fpm $WP rewrite flush --path=/var/www/html
 
-echo "=== Creating test content ==="
-$COMPOSE exec php-fpm $WP post create \
-    --post_type=post \
-    --post_title="Patina Benchmark Post" \
-    --post_name="patina-benchmark" \
-    --post_status=publish \
-    --post_content='<p>This is a <strong>benchmark post</strong> with <a href="http://example.com">links</a> and <em>formatting</em>.</p>
-<p>Second paragraph with special chars: &amp; &lt; &gt; "quotes".</p>
-<p>日本語テスト with multibyte content.</p>
-<ul><li>Item 1</li><li>Item 2</li><li>Item 3</li></ul>' \
-    --path=/var/www/html
-
-echo "=== Warming OPcache ==="
-for i in 1 2 3; do
-    curl -s http://localhost:8080/ > /dev/null
-done
+echo "=== Seeding benchmark content corpus ==="
+$COMPOSE exec php-fpm bash /app/profiling/seed-benchmark-content.sh
 
 echo ""
 echo "=== Setup complete ==="
