@@ -1,0 +1,15 @@
+<!-- wp:paragraph -->
+<p>A short post is a good unit of work for the <strong>latest-posts</strong> loop on the homepage — five hundred bytes of body, nothing fancy, a single block-level paragraph and maybe a list. It exercises the render path once, keeps <em>parse_blocks</em> cheap, and acts as the baseline single-post scenario.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul>
+<li>Fast to render</li>
+<li>Minimal block tree</li>
+<li>Matches most real blog posts</li>
+</ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>Special chars for kses: &amp; &lt; &gt; "quoted" &amp;amp; &#x1F680; — plus <a href="https://example.com/">an internal link</a> and an <a href="https://example.org/path?q=1">external one</a> so the URL sanitizer has something to chew on.</p>
+<!-- /wp:paragraph -->

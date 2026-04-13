@@ -9,8 +9,11 @@ Rust PHP extension replacing WordPress core functions with native implementation
 - `patina-bench` — Criterion benchmarks. `fuzz/` — cargo-fuzz targets.
 - `php/tests/` — unit PHPUnit tests (no WordPress loaded). Run via the dev container.
 - `php/tests-integration/` — WordPress-backed integration tests. Run inside the profiling stack; bootstrap requires `wp-load.php` so real `add_filter()`/`apply_filters()` calls work. Use these to verify filter/hook compatibility for overridden functions.
-- `php/bridge/patina-bridge.php` — mu-plugin that calls `patina_activate()` at WP boot.
-- `profiling/` — Docker WordPress stack with SPX + k6.
+- `php/bridge/patina-bridge.php` — mu-plugin that calls `patina_activate()` at WP boot. Reads `PATINA_DISABLE_*` env vars / constants to build the per-override skip list.
+- `profiling/` — Docker WordPress stack with SPX + k6. `profiling/benchmark-content/` holds the seed corpus for HTTP benches.
+- `scripts/` — HTTP bench runner, aggregator, comparator, and SPX helper. Driven via `make bench-full` / `make bench-compare` / `make bench-baseline`.
+- `fixtures/baselines/` — committed HTTP-bench baselines (one subdirectory per named run).
+- `docs/BENCHMARKS.md` — end-to-end HTTP results and the follow-up action list. `docs/BENCHMARK_PLAN.md` — the six-phase plan the bench harness was built against.
 
 ## Commands
 
@@ -24,9 +27,46 @@ make build             # Release .so
 make bench             # PHP benchmarks (Rust vs PHP)
 make bench-wp          # WP-backed benchmarks (kses + friends)
 make bench-jit         # With JIT enabled
+make bench-http        # HTTP-level bench (k6 TTFB, one config)
+make bench-full        # Full per-config matrix (stock + 4 patina configs)
+make bench-compare RUN=/path [TO=/path]  # Intra-run decomposition or cross-run diff
+make bench-baseline NAME=foo             # bench-full → fixtures/baselines/foo/
 make verify            # Load extension, print functions
 make shell             # Dev container shell
 ```
+
+`bench-full` iterates five named configurations (`stock`, `esc_only`,
+`kses_only`, `parse_blocks_only`, `full_patina`) by injecting a
+`000-patina-bench-config.php` mu-plugin that defines the relevant
+`PATINA_DISABLE_*` constants before `patina-bridge.php` loads, then
+restarting php-fpm between configs. Per-config summaries + a manifest
+land under `/tmp/patina-bench/<ts>/`. `PROFILE=1 make bench-full`
+additionally captures one SPX flame graph per scenario per config into
+`<run>/<config>/spx/`; browse with `./scripts/spx-ui.sh <run>/<config>`.
+
+Committed baselines live under `fixtures/baselines/`. Regenerate after
+every material change to the bridge or override set and compare with
+`make bench-compare RUN=fixtures/baselines/old TO=fixtures/baselines/new`.
+See `docs/BENCHMARKS.md` for the current baseline's headline numbers
+and the open action items (bridge overhead, activation caching).
+
+### Per-override toggles
+
+The bridge mu-plugin honors a set of env vars / PHP constants that skip
+individual overrides at activation time. Useful for A/B decomposition
+during benchmarking without rebuilding the `.so`:
+
+| Flag | Skips |
+|---|---|
+| `PATINA_DISABLE` | everything (kill switch) |
+| `PATINA_DISABLE_ESC` | `esc_html` + `esc_attr` |
+| `PATINA_DISABLE_KSES` | `wp_kses` and every wrapper |
+| `PATINA_DISABLE_PARSE_BLOCKS` | `parse_blocks` |
+
+Each flag works as either a shell env var (`PATINA_DISABLE_KSES=1 php-fpm ...`)
+or a PHP constant defined before mu-plugins load. Under the hood the bridge
+builds a PHP array of WordPress function names and passes it as
+`patina_activate($skip_list)` — direct callers can do the same.
 
 Target PHP version: `PHP_VERSION=8.1 make build`
 

@@ -3,7 +3,7 @@ DEV = docker compose -f docker/docker-compose.dev.yml run --rm dev
 PROF = docker compose -f profiling/docker-compose.yml
 export DOCKER_BUILDKIT = 1
 
-.PHONY: help build test test-rust test-php test-integration bench bench-wp bench-jit bench-rust check clean fixtures shell
+.PHONY: help build test test-rust test-php test-integration bench bench-wp bench-jit bench-rust bench-http bench-full bench-compare bench-baseline check clean fixtures shell
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -67,6 +67,52 @@ bench-jit: build ## Run PHP benchmarks with JIT enabled
 
 bench-rust: ## Run Criterion benchmarks
 	$(DEV) cargo bench -p patina-bench
+
+bench-http: ## Run HTTP-level bench (k6 against the profiling stack)
+	@echo "=== Building extension for PHP 8.3 ==="
+	docker build --build-arg PHP_VERSION=8.3 -f docker/Dockerfile.build --target builder -t patina-build-8.3 . > /dev/null
+	docker run --rm patina-build-8.3 cat /src/target/release/libpatina.so > /tmp/patina-8.3.so
+	@echo "=== Starting profiling stack ==="
+	$(PROF) up -d
+	@EXT_DIR=$$($(PROF) exec php-fpm php -r "echo ini_get('extension_dir');") && \
+		$(PROF) cp /tmp/patina-8.3.so php-fpm:$$EXT_DIR/patina.so && \
+		$(PROF) exec php-fpm bash -c 'echo "extension=patina.so" > /usr/local/etc/php/conf.d/patina.ini' && \
+		$(PROF) exec php-fpm bash -c 'mkdir -p /var/www/html/wp-content/mu-plugins && cp /app/php/bridge/patina-bridge.php /var/www/html/wp-content/mu-plugins/'
+	$(PROF) restart php-fpm
+	@sleep 2
+	@RUN_DIR=/tmp/patina-bench/$$(date -u +%Y%m%dT%H%M%SZ) && \
+		mkdir -p $$RUN_DIR && \
+		echo "=== Running k6 workloads ($$RUN_DIR) ===" && \
+		$(PROF) exec -T \
+			-e BASE_URL=http://nginx \
+			-e ITERATIONS=$${ITERATIONS:-100} \
+			-e WARMUP=$${WARMUP:-5} \
+			php-fpm k6 run \
+				--quiet \
+				--out json=/tmp/k6-output.json \
+				/app/profiling/k6-workloads.js && \
+		$(PROF) exec -T php-fpm cat /tmp/k6-output.json > $$RUN_DIR/k6-output.json && \
+		echo "Output: $$RUN_DIR/k6-output.json"
+
+bench-full: ## Run the full per-config bench matrix (stock + 4 patina configs)
+	@ITERATIONS=$${ITERATIONS:-100} WARMUP=$${WARMUP:-5} \
+		CONFIGS=$${CONFIGS:-stock,esc_only,kses_only,parse_blocks_only,full_patina} \
+		bash scripts/bench-runner.sh
+
+bench-compare: ## Compare one run (intra) or two runs (cross). Usage: make bench-compare RUN=/tmp/... [TO=/tmp/...]
+	@if [ -z "$${RUN:-}" ]; then echo "usage: make bench-compare RUN=/path/to/run [TO=/path/to/other-run]"; exit 2; fi
+	@if [ -n "$${TO:-}" ]; then \
+		python3 scripts/bench-compare.py "$$RUN" "$$TO" $${BASELINE:+--baseline $$BASELINE} $${FAIL_ON_REGRESS:+--fail-on-regress $$FAIL_ON_REGRESS}; \
+	else \
+		python3 scripts/bench-compare.py "$$RUN" $${BASELINE:+--baseline $$BASELINE} $${FAIL_ON_REGRESS:+--fail-on-regress $$FAIL_ON_REGRESS}; \
+	fi
+
+bench-baseline: ## Run bench-full and commit the result under fixtures/baselines/
+	@if [ -z "$${NAME:-}" ]; then echo "usage: make bench-baseline NAME=phase6-initial"; exit 2; fi
+	@RUN_DIR=fixtures/baselines/$${NAME} ITERATIONS=$${ITERATIONS:-100} WARMUP=$${WARMUP:-5} \
+		bash scripts/bench-runner.sh
+	@echo "Baseline written to fixtures/baselines/$${NAME}"
+	@echo "Review and git add fixtures/baselines/$${NAME} when you're happy with it."
 
 check: ## Run all checks (test + clippy + fmt)
 	$(DEV) sh -c '\

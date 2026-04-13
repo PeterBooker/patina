@@ -99,8 +99,21 @@ function __patina_parse_blocks_shim__($content) {
 ///
 /// Call this from a mu-plugin AFTER WordPress has loaded its core functions.
 /// Returns the number of functions successfully overridden.
+///
+/// `skip_list` is an optional PHP array of WordPress function names to
+/// leave untouched. Used by the bench runner to A/B individual overrides
+/// without rebuilding the `.so`:
+///
+/// ```php
+/// // skip the wp_kses override; keep esc_html / esc_attr / parse_blocks
+/// patina_activate(['wp_kses']);
+/// ```
+///
+/// The PHP bridge mu-plugin builds this list from `PATINA_DISABLE_ESC`,
+/// `PATINA_DISABLE_KSES`, and `PATINA_DISABLE_PARSE_BLOCKS` — see
+/// `php/bridge/patina-bridge.php`.
 #[php_function]
-pub fn patina_activate() -> PhpResult<i64> {
+pub fn patina_activate(skip_list: Option<&Zval>) -> PhpResult<i64> {
     // Idempotency: if any of the shim functions already exist we've
     // already activated this request, so skip the eval.
     if !php_function_exists("__patina_wp_kses_shim__") {
@@ -111,8 +124,16 @@ pub fn patina_activate() -> PhpResult<i64> {
         }
     }
 
+    let skip: Vec<String> = skip_list
+        .and_then(|z| z.array())
+        .map(|arr| arr.values().filter_map(|v| v.string()).collect::<Vec<_>>())
+        .unwrap_or_default();
+
     let mut count = 0i64;
     for &(target, replacement) in SHIM_OVERRIDES {
+        if skip.iter().any(|s| s == target) {
+            continue;
+        }
         if swap_function(target, replacement).is_ok() {
             count += 1;
         }

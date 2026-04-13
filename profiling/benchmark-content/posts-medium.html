@@ -1,0 +1,69 @@
+<!-- wp:heading -->
+<h2 class="wp-block-heading">A medium-length block post</h2>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>This fixture is roughly three kilobytes of body content, designed to stress <code>parse_blocks</code> and the <strong>render-time kses pass</strong> with enough block variety to matter without becoming an outlier. It contains headings, paragraphs, lists, a quote, an embedded code block, a table, and a group with columns — the building blocks (pun intended) of a typical long-form blog post before it turns into a wall of text.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Why realistic shapes matter</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>WordPress ships a block grammar parser that's quadratic in some pathological cases but linear for well-formed content. Patina's Rust parser is the same complexity class but with a much smaller constant factor. The test here is not "does it beat the PHP parser on a degenerate input" — it's "does it beat the PHP parser on content that looks like what real users write". Hence: multiple block types, a mix of nesting depths, and some inline formatting.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul>
+<li>Shapes matter more than sizes</li>
+<li>Block variety beats repetition</li>
+<li>Real users mix markup and prose freely</li>
+<li>Comment-heavy posts render kses on every comment body</li>
+<li>Search results hit the same scenario tree</li>
+</ul>
+<!-- /wp:list -->
+
+<!-- wp:quote -->
+<blockquote class="wp-block-quote">
+<p>"If your benchmark doesn't look like production, it's not a benchmark — it's a microbenchmark, and microbenchmarks lie by amortizing away the exact costs you came to measure."</p>
+<cite>— Every performance engineer ever</cite>
+</blockquote>
+<!-- /wp:quote -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>// Rust parser sketch — matches WordPress grammar byte-for-byte
+let blocks = patina_core::blocks::parse_blocks(content);
+for block in &blocks {
+    render_block(block);
+}
+</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:table -->
+<figure class="wp-block-table"><table><thead><tr><th>Override</th><th>Mechanism</th><th>Win zone</th></tr></thead><tbody>
+<tr><td>esc_html</td><td>shim</td><td>every request</td></tr>
+<tr><td>wp_kses</td><td>shim</td><td>comment-heavy pages</td></tr>
+<tr><td>parse_blocks</td><td>shim</td><td>long block posts</td></tr>
+</tbody></table></figure>
+<!-- /wp:table -->
+
+<!-- wp:group -->
+<div class="wp-block-group">
+<!-- wp:columns -->
+<div class="wp-block-columns">
+<!-- wp:column -->
+<div class="wp-block-column"><!-- wp:paragraph --><p>Column one holds a short note about what a two-column group looks like in the block tree — one <code>core/group</code>, one <code>core/columns</code>, two <code>core/column</code> children, and whatever lives inside them.</p><!-- /wp:paragraph --></div>
+<!-- /wp:column -->
+
+<!-- wp:column -->
+<div class="wp-block-column"><!-- wp:paragraph --><p>Column two is the counterweight. Nesting depth goes from zero (the root) to four (group → columns → column → paragraph), which is plenty to exercise the recursive descent in <code>parse_blocks</code> without getting silly.</p><!-- /wp:paragraph --></div>
+<!-- /wp:column -->
+</div>
+<!-- /wp:columns -->
+</div>
+<!-- /wp:group -->
+
+<!-- wp:paragraph -->
+<p>Finally some inline-heavy text with <strong>bold</strong>, <em>italics</em>, <code>inline code</code>, <a href="https://example.com/">a link</a>, <a href="mailto:test@example.com">an email</a>, and entities like &amp;mdash; — all of which flow through the render-time kses pass.</p>
+<!-- /wp:paragraph -->

@@ -7,15 +7,26 @@ An **EXPERIMENTAL** PHP extension written in Rust that replaces WordPress core f
 
 ## Current Status
 
-| Function | Override Mechanism | Speedup vs PHP |
+| Function | Override Mechanism | Microbench speedup vs PHP |
 |---|---|---|
-| `esc_html()` | Direct swap | 1.5–1.9× |
-| `esc_attr()` | Direct swap | 1.5–1.9× |
+| `esc_html()` | PHP user-function shim | 1.5–1.9× |
+| `esc_attr()` | PHP user-function shim | 1.5–1.9× |
 | `wp_kses()` *(and all wrappers)* | PHP user-function shim | 2.9–6.9× |
+| `parse_blocks()` | PHP user-function shim | significant on block-heavy posts |
 | `wp_sanitize_redirect()` | Pluggable replacement | 1.2–1.6× |
 | `wp_validate_redirect()` | Pluggable replacement | — |
 
+**End-to-end HTTP TTFB**: no patina configuration is statistically
+distinguishable from stock WordPress at n=100 on the current bench
+workload — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full
+`phase6-initial` baseline and analysis. The per-function microbench
+numbers above are real, but bridge overhead and per-request activation
+cost eat most of the win on realistic content. Work items to fix this
+are listed in `BENCHMARKS.md` § Action items.
+
 The `wp_kses` override catches every wrapper that calls it internally — `wp_kses_post`, `wp_kses_data`, `wp_filter_post_kses`, `wp_filter_kses`, `wp_filter_nohtml_kses`, `wp_kses_post_deep` — including the save pipeline (`content_save_pre` → `wp_filter_post_kses` → `wp_kses`). Filter compatibility is preserved: `pre_kses`, `wp_kses_allowed_html`, `kses_allowed_protocols`, and `wp_kses_uri_attributes` are all honored.
+
+`parse_blocks` runs the Gutenberg block grammar in Rust and returns the exact nested-array shape WordPress produces (`blockName`, `attrs`, `innerBlocks`, `innerHTML`, `innerContent`). The `block_parser_class` filter is still respected — when a plugin swaps in a custom parser, the shim falls through to the stock PHP path.
 
 ## Requirements
 
@@ -124,7 +135,10 @@ make bench            # PHP benchmarks (Rust vs PHP)
 make bench-wp         # WP-backed benchmarks (kses family)
 make bench-jit        # PHP benchmarks with JIT enabled
 make bench-rust       # Criterion micro-benchmarks
+make bench-http       # HTTP-level bench (k6 vs the profiling stack, TTFB per scenario)
 ```
+
+`make bench-http` drives the profiling stack with [k6](https://k6.io/) over real HTTP requests, tracking `http_req_waiting` (TTFB) and `http_req_duration` per scenario. Raw k6 JSON is written under `/tmp/patina-bench/<timestamp>/k6-output.json`. Override the sample count with `ITERATIONS=200 make bench-http` (default is 100 post-warmup samples per scenario, plus 5 discarded warmup iterations).
 
 The integration suite runs inside the profiling stack's php-fpm container — WordPress is fully loaded, the bridge mu-plugin is installed, and tests can register real filters via `add_filter()` to verify that plugin/theme customization still works against overridden functions. Use it whenever you add or modify an override that interacts with WordPress filters (`pre_kses`, `wp_kses_allowed_html`, `kses_allowed_protocols`, etc.).
 
@@ -141,7 +155,7 @@ No data migration, no database changes, nothing to undo.
 
 ## Roadmap
 
-- **Next**: high-value targets using the mechanisms above — `esc_url`, `wpautop`, `sanitize_title`, `make_clickable`, `parse_blocks`
+- **Next**: high-value targets using the mechanisms above — `esc_url`, `wpautop`, `sanitize_title`, `make_clickable`
 - **Future**: PECL packaging, Composer distribution, OS packages
 
 ## License

@@ -32,20 +32,28 @@ patina/
 │   └── patina-fuzz/               #   Fuzz targets
 │
 ├── fixtures/                      # JSON test fixtures (shared by Rust + PHP)
+│   └── baselines/                 #   Committed HTTP-bench baselines (Phase 6 output)
 │
 ├── php/                           # All PHP code
 │   ├── bridge/                    #   mu-plugin for non-pluggable interception
 │   ├── fixture-generator/         #   Script to generate fixtures from WordPress
 │   ├── tests/                     #   PHPUnit tests
+│   ├── tests-integration/         #   PHPUnit tests run against a real WP boot
 │   └── benchmarks/                #   PHP-level benchmarks
 │
-├── profiling/                     # WordPress profiling environment
+├── profiling/                     # WordPress profiling environment + HTTP bench stack
+│   └── benchmark-content/         #   Seed corpus for realistic HTTP benches
+│
+├── scripts/                       # Bench runner, aggregator, comparator, SPX helper
 │
 ├── docker/                        # Build and test Dockerfiles
 │
 ├── .github/workflows/             # CI/CD
 │
 └── docs/                          # Project documentation
+    ├── BENCHMARKS.md               #   End-to-end HTTP bench results + analysis
+    ├── BENCHMARK_PLAN.md           #   The six-phase bench plan (status tracker)
+    └── PROJECT_STRUCTURE.md        #   This file
 ```
 
 ### Why these top-level divisions?
@@ -53,9 +61,10 @@ patina/
 | Directory | Concern | Changes when... |
 |---|---|---|
 | `crates/` | Rust implementation | A function is added/modified |
-| `fixtures/` | Correctness contract | WordPress changes behavior or a new function is added |
+| `fixtures/` | Correctness contract + committed bench baselines | WordPress changes behavior, a new function is added, or a new HTTP baseline is taken |
 | `php/` | PHP integration layer | Bridge logic changes, new PHP tests, new benchmarks |
-| `profiling/` | Performance measurement infra | Workloads change or tools are updated |
+| `profiling/` | Performance measurement infra + bench seed corpus | Workloads change, content corpus grows, or tools are updated |
+| `scripts/` | Bench runner + comparison tooling | Bench harness evolves (rare) |
 | `docker/` | Build/test environments | PHP versions or build deps change |
 | `.github/` | CI automation | Pipeline logic changes |
 | `docs/` | Human knowledge | Decisions or processes change |
@@ -684,15 +693,60 @@ docker/
 
 ```
 profiling/
-├── docker-compose.yml             # Nginx + PHP-FPM + SPX + MariaDB
-├── Dockerfile.profiling           # PHP-FPM with SPX, Xdebug, WP-CLI
+├── docker-compose.yml             # Nginx + PHP-FPM + SPX + k6 + MariaDB
+├── Dockerfile.profiling           # PHP-FPM with SPX, WP-CLI, and k6
 ├── nginx.conf                     # WordPress Nginx config
-├── setup-wordpress.sh             # Automated WP install + test data import
-├── k6-workloads.js                # Load test scenarios
-└── output/                        # Profiling artifacts (gitignored)
+├── setup-wordpress.sh             # Automated WP install + bench seed
+├── seed-benchmark-content.sh      # Phase 2 seed: TT25, theme-test-data WXR,
+│                                  # block-tier corpus, stable bench slugs
+├── k6-workloads.js                # k6 HTTP bench scenarios (TTFB per URL)
+└── benchmark-content/             # Seed fixtures + WXR pin file
+    ├── WXR_PIN.env                #   Pinned upstream theme-test-data ref
+    ├── posts-short.html           #   ~500 B block tier
+    ├── posts-medium.html          #   ~3 KB block tier
+    ├── posts-long.html            #   ~8 KB block tier (deep nesting)
+    └── classic-post.html          #   Pre-Gutenberg HTML — wpautop zone
 ```
 
-Completely self-contained. `docker compose up && ./setup-wordpress.sh` gives you a profiling-ready WordPress with test content. No dependency on the extension — this is for measuring WordPress, not testing Patina.
+`docker compose up && ./setup-wordpress.sh` gives a fully seeded
+WordPress install ready for HTTP benches. The seed script fetches the
+upstream theme-test-data WXR pinned to a SHA, imports it, and layers
+the block-tier corpus and stable bench slugs on top so `scripts/bench-runner.sh`
+can target them deterministically.
+
+### `scripts/` — Bench runner and comparison tooling
+
+```
+scripts/
+├── bench-runner.sh                # Full matrix: builds .so, iterates configs,
+│                                  # restarts php-fpm, runs k6, aggregates
+├── bench-aggregate.py             # k6 NDJSON → Patina summary schema
+├── bench-compare.py               # Intra-run decomposition or cross-run diff
+│                                  # with Welch's t-test + markdown report
+└── spx-ui.sh                      # Restore captured SPX profiles into the
+                                   # container and print the UI URL
+```
+
+One entry point per phase-4/5 deliverable. The runner writes per-run
+output to `/tmp/patina-bench/<ts>/` by default; `make bench-baseline
+NAME=<name>` redirects it to `fixtures/baselines/<name>/` so results
+can be committed.
+
+### `fixtures/baselines/` — Committed HTTP-bench baselines
+
+```
+fixtures/baselines/
+└── phase6-initial/                # First baseline (2026-04-13)
+    ├── manifest.json              #   Run metadata (SHA, host, versions)
+    ├── report.md                  #   bench-compare markdown output
+    └── <config>/summary.json      #   Aggregated stats + raw samples per config
+```
+
+Each baseline directory is a committable slice of a full `bench-full`
+run — just the per-config `summary.json`s (which contain raw samples),
+plus the manifest and the rendered report. Raw k6 NDJSON output stays
+under `/tmp/patina-bench/` because it's an order of magnitude larger
+without adding analytical value.
 
 ### `.github/workflows/` — CI/CD
 
