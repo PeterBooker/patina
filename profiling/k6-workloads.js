@@ -26,8 +26,25 @@ import { check, fail } from 'k6';
 import { Trend, Counter } from 'k6/metrics';
 
 const BASE_URL = __ENV.BASE_URL || 'http://nginx';
+// WordPress was installed with --url=http://localhost:8080, so it
+// canonicalizes requests to that host. Inside the compose network we
+// reach nginx via the service name but still need WP to think the
+// request is for the canonical host, otherwise it 301-redirects.
+const HOST_HEADER = __ENV.HOST_HEADER || 'localhost:8080';
 const ITERATIONS = parseInt(__ENV.ITERATIONS || '100', 10);
 const WARMUP = parseInt(__ENV.WARMUP || '5', 10);
+
+// SPX profile trigger (Phase 5 of docs/BENCHMARK_PLAN.md). When SPX_KEY is
+// set in the environment, the Nth post-warmup iteration of each scenario
+// is sent with the SPX HTTP cookies, which causes php-spx to profile that
+// single request server-side and drop a profile file into /tmp/spx inside
+// the container. SPX_PROFILE_ITER selects which iteration — defaults to the
+// first post-warmup sample so the profile corresponds to a "cold" request.
+// Leaving SPX_KEY empty disables profiling entirely (the default for
+// regular bench runs — SPX adds ~10% overhead even on requests it doesn't
+// fully instrument).
+const SPX_KEY = __ENV.SPX_KEY || '';
+const SPX_PROFILE_ITER = parseInt(__ENV.SPX_PROFILE_ITER || String(WARMUP), 10);
 
 // Scenarios — (name, path) pairs. The path is relative; cache-bust is appended
 // at request time. Phase 2 will expand this list once the realistic content
@@ -87,10 +104,24 @@ export function runScenario() {
     const sep = path.includes('?') ? '&' : '?';
     const url = `${BASE_URL}${path}${sep}t=${__ITER}_${__VU}_${Date.now()}`;
 
-    const res = http.get(url, {
+    const params = {
         tags: { scenario: name },
         timeout: '30s',
-    });
+        headers: { Host: HOST_HEADER },
+    };
+    // SPX profile trigger — single iteration per scenario. SPX tags the
+    // profile with the request URL, and we included the scenario name in
+    // the SPX_UI_REPORT_KEY cookie so the runner's post-hoc copy step can
+    // match profiles back to their originating scenario.
+    if (SPX_KEY && __ITER === SPX_PROFILE_ITER) {
+        params.cookies = {
+            SPX_ENABLED: '1',
+            SPX_KEY: SPX_KEY,
+            SPX_UI_URI: '/',
+            SPX_REPORT_KEY: `patina_bench_${name}`,
+        };
+    }
+    const res = http.get(url, params);
 
     const ok = check(res, {
         'status is 2xx': (r) => r.status >= 200 && r.status < 300,

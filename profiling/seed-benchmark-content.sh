@@ -168,8 +168,10 @@ echo "=== Flushing rewrites ==="
 $WP rewrite flush $PATH_ARG
 
 echo "=== Warming OPcache ==="
+# Inside the compose network php-fpm reaches WordPress via the nginx service,
+# not localhost (the fpm container has no HTTP listener of its own).
 for path in / /a-short-block-post/ /a-long-block-post/ /a-classic-html-post/ /a-commented-post/ /category/announcements/ /?s=lorem; do
-    curl -s "http://localhost${path}" > /dev/null || true
+    curl -s "http://nginx${path}" > /dev/null || true
 done
 
 echo ""

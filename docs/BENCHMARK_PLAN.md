@@ -1,6 +1,6 @@
 # Benchmark Refactor Plan
 
-Status: **in progress** — Q1–Q5 decided 2026-04-13, Phases 1–3 under implementation
+Status: **complete** — Q1–Q5 decided 2026-04-13, Phases 1–6 implemented, first baseline committed under `fixtures/baselines/phase6-initial/`. See `docs/BENCHMARKS.md` for the headline results and follow-up work
 Author: drafted 2026-04-12 by Claude in a planning session with Peter
 Supersedes: parts of `docs/IMPLEMENTATION_PLAN.md` that reference benchmarking
 
@@ -373,17 +373,45 @@ When picking this back up:
 
 ## Relevant files in the current repo
 
-- `profiling/docker-compose.yml` — nginx + php-fpm + mariadb stack
-- `profiling/Dockerfile.profiling` — php-fpm image, SPX install, needs k6 added in Phase 1
-- `profiling/setup-wordpress.sh` — current manual seed, replaced in Phase 2
-- `profiling/k6-workloads.js` — existing k6 script skeleton, rewritten in Phase 1
-- `profiling/conf/spx.ini` — SPX config (already correct for HTTP profiling)
-- `php/benchmarks/bench-kses.php` — CLI microbench, **not replaced** — complements HTTP runner
-- `php/benchmarks/run.php` — CLI microbench, **not replaced**
-- `crates/patina-ext/src/lib.rs` — `patina_activate()` and `SHIM_OVERRIDES` live here; Phase 3 modifies this file
-- `php/bridge/patina-bridge.php` — mu-plugin that calls `patina_activate()`; Phase 3 modifies this file
-- `docs/IMPLEMENTATION_PLAN.md` — historical plan, benchmark-related sections are superseded by this doc
-- `CLAUDE.md` — project overview; Phase 6 updates the bench command table and Phase 3 adds per-override toggle docs
+As built, by phase:
+
+- **Phase 1 (HTTP runner)**: `profiling/Dockerfile.profiling` (k6 apt
+  install), `profiling/k6-workloads.js` (per-scenario executors,
+  cache-bust, TTFB/total trends, warmup discard, `Host` header override),
+  `Makefile` target `bench-http`.
+- **Phase 2 (content corpus)**: `profiling/benchmark-content/` (three
+  block-tier HTMLs, classic-post HTML, `WXR_PIN.env`, README),
+  `profiling/seed-benchmark-content.sh` (TT25 + WXR fetch + stable
+  slugs), `profiling/setup-wordpress.sh` (calls the seeder).
+- **Phase 3 (runtime toggles)**: `crates/patina-ext/src/lib.rs`
+  (`patina_activate(skip_list: Option<&Zval>)`),
+  `php/bridge/patina-bridge.php` (reads `PATINA_DISABLE_ESC/KSES/PARSE_BLOCKS`
+  env + constants), `php/tests-integration/OverrideTogglesTest.php`.
+- **Phase 4 (runner + comparator)**: `scripts/bench-runner.sh` (5-config
+  matrix, mu-plugin injection, php-fpm restart between configs),
+  `scripts/bench-aggregate.py` (k6 NDJSON → summary schema),
+  `scripts/bench-compare.py` (intra- or cross-run diff with Welch's
+  t-test + markdown report), `Makefile` targets `bench-full`,
+  `bench-compare`, `bench-baseline`.
+- **Phase 5 (SPX integration)**: k6 cookie injection on one sample per
+  scenario when `SPX_KEY` is set, runner tar-out of `/tmp/spx` into
+  `<run>/<config>/spx/`, comparator lists profile files in the report,
+  `scripts/spx-ui.sh` helper.
+- **Phase 6 (baseline)**: `fixtures/baselines/phase6-initial/` (committed
+  manifest + per-config summaries + report), `docs/BENCHMARKS.md`
+  (methodology + headline numbers + action items), `README.md` status
+  table re-labeled as microbench with a pointer to BENCHMARKS.md for
+  end-to-end reality.
+
+Supporting files unchanged by this plan but relevant:
+
+- `profiling/conf/spx.ini` — SPX config (HTTP key `dev`)
+- `php/benchmarks/bench-kses.php`, `php/benchmarks/run.php` — CLI
+  microbenches, kept as a complement (not replaced)
+- `crates/patina-ext/src/lib.rs` — activation / swap machinery and
+  `SHIM_OVERRIDES` table
+- `docs/IMPLEMENTATION_PLAN.md` — historical plan; bench sections
+  superseded by this doc
 
 ## References
 

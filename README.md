@@ -7,14 +7,22 @@ An **EXPERIMENTAL** PHP extension written in Rust that replaces WordPress core f
 
 ## Current Status
 
-| Function | Override Mechanism | Speedup vs PHP |
+| Function | Override Mechanism | Microbench speedup vs PHP |
 |---|---|---|
-| `esc_html()` | Direct swap | 1.5–1.9× |
-| `esc_attr()` | Direct swap | 1.5–1.9× |
+| `esc_html()` | PHP user-function shim | 1.5–1.9× |
+| `esc_attr()` | PHP user-function shim | 1.5–1.9× |
 | `wp_kses()` *(and all wrappers)* | PHP user-function shim | 2.9–6.9× |
-| `parse_blocks()` | PHP user-function shim | ~44 ms/request saved on block-heavy posts |
+| `parse_blocks()` | PHP user-function shim | significant on block-heavy posts |
 | `wp_sanitize_redirect()` | Pluggable replacement | 1.2–1.6× |
 | `wp_validate_redirect()` | Pluggable replacement | — |
+
+**End-to-end HTTP TTFB**: no patina configuration is statistically
+distinguishable from stock WordPress at n=100 on the current bench
+workload — see [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full
+`phase6-initial` baseline and analysis. The per-function microbench
+numbers above are real, but bridge overhead and per-request activation
+cost eat most of the win on realistic content. Work items to fix this
+are listed in `BENCHMARKS.md` § Action items.
 
 The `wp_kses` override catches every wrapper that calls it internally — `wp_kses_post`, `wp_kses_data`, `wp_filter_post_kses`, `wp_filter_kses`, `wp_filter_nohtml_kses`, `wp_kses_post_deep` — including the save pipeline (`content_save_pre` → `wp_filter_post_kses` → `wp_kses`). Filter compatibility is preserved: `pre_kses`, `wp_kses_allowed_html`, `kses_allowed_protocols`, and `wp_kses_uri_attributes` are all honored.
 
