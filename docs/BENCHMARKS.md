@@ -10,33 +10,91 @@ The methodology, scenarios, and runner live under `scripts/bench-runner.sh`
 and `profiling/k6-workloads.js`. The bench infrastructure itself is
 described in `docs/BENCHMARK_PLAN.md`.
 
-## Latest result — `phase6-initial` (2026-04-13)
+## Latest result — `phase8-activation-cached` (2026-04-15)
 
-**Headline**: at n=100 samples per scenario, **no patina configuration
-showed a statistically significant delta (p<0.05) from stock WordPress**
-on any of the 9 scenarios. Observed Δp95 across all 36 (config, scenario)
-pairs sits between −14.9% and +16.4%, but every t-test p-value is between
-0.33 and 1.00 — the within-scenario sample jitter (~10–15 ms stddev) is
-large enough to swallow any patina effect on this workload.
+**Headline**: action item #1 landed. `patina_activate()` now
+short-circuits after the first call per FPM worker via a Rust-side
+`AtomicBool` + a `patina_is_activated()` probe the mu-plugin calls
+before building the skip list. The cached path costs ~22 ns per
+invocation (10k calls in 0.22 ms, measured). Cross-run diff against
+`phase7-paired` shows the fix delivered 0.3–1.7% off every patina
+config on every scenario it was slow on, with the biggest gains on
+`full_patina` (all 4 swaps skipped):
 
-This is the same gap the plan was designed to measure: per-function
-microbenchmarks show 1.5–6.9× speedups, but on a real pageload the
-bridge-overhead cost and the amortized-away activation cost bring the
-net effect within noise of zero on moderate content.
+| Scenario | phase7 `full_patina` | phase8 `full_patina` | Δtmean (cross-run) | paired p |
+|---|---:|---:|---:|---|
+| archive_category | +1.1% vs stock (p=2e-07) | −0.2% vs stock (p=0.65) | **−1.2%** | 0.009 ** |
+| archive_tag | +0.7% vs stock (p=2e-04) | −0.5% vs stock (p=0.07) | **−1.1%** | 0.0002 *** |
+| single_classic | +1.2% vs stock (p=5e-09) | −0.0% vs stock (p=0.68) | **−1.5%** | 0.0004 *** |
+| single_commented | +1.0% vs stock (p=3e-07) | −0.1% vs stock (p=0.72) | **−1.2%** | 1.4e-05 *** |
+| single_long | +0.4% vs stock (p=0.018) | −0.0% vs stock (p=0.46) | **−0.6%** | 0.015 * |
+| single_short | +1.0% vs stock (p=6e-08) | +0.0% vs stock (p=0.61) | **−1.3%** | 4.5e-07 *** |
+
+**`full_patina` is now statistically indistinguishable from stock on
+every one of the nine scenarios** (all p > 0.068). `parse_blocks_only`
+also narrows dramatically: `single_short` went from +1.1%/p=1.3e-08 to
+−0.0%/p=0.36, and `single_long` from +0.7%/p=0.001 to +0.2%/p=0.12.
+`archive_category` and `single_classic` still show a tiny residual
++0.2–0.5% for parse_blocks_only at p~0.02 — the remaining bridge
+cost that action items #2 (shim-level `apply_filters`) and #3
+(per-request `has_filter` cache) need to close.
+
+The stock control moved by ±0.3% across the two runs (max p=0.45),
+confirming host/bench reproducibility: the patina deltas above are
+real, not run-to-run drift.
+
+## `phase7-paired` (2026-04-15) — harness rebuild
+
+The benchmark harness now resolves sub-1% deltas with p<0.001 on most
+scenarios. This is the run that first exposed how much bridge overhead
+was dominating every override's effect — and traced `phase6-initial`'s
+"no statistically significant delta" conclusion to an *instrument*
+failure rather than a patina-effect failure.
+
+`profiling/k6-workloads.js` had `startTime: null` on every scenario,
+which k6 interprets as "start simultaneously" — with 9 scenarios ×
+`vus=1` and `pm.max_children=5`, 4 requests per round queued behind
+workers, and queue-wait variance (~25 ms) was the noise that swallowed
+every patina effect. Serializing k6 into a single `per-vu-iterations`
+executor that round-robins through the URLs dropped TTFB from ~150 ms
+to ~28–48 ms and stddev from 12–23% CV to **1.9–3.2% CV** — a 6–8×
+reduction that exposed the real underlying effects. Chunked config
+interleaving + paired t-tests + cpuset pinning layer on top of that
+fix; none of them mattered until the parallel-scenarios bug was out
+of the way.
+
+At the new resolution, every patina configuration came out
+statistically significantly *slower* than stock on the scenarios that
+had a measurable signal, and indistinguishable from stock on the
+rest. `parse_blocks_only` was +0.5–1.1% slower on 6/9 scenarios
+(p<0.01), zero-sig on 3/9, and zero scenarios faster. `full_patina`
+had the same pattern with slightly worse magnitudes. The bridge
+overhead exceeded the Rust algorithmic savings on 30–50 ms TTFB
+requests — exactly the "action items" regime that phase6-initial
+could only speculate about, and the thing phase8 started fixing.
 
 ### Setup
 
 - **Host**: Peter-PC, AMD Ryzen 9 5950X (16 cores / 32 threads), CachyOS
-- **Stack**: Docker — nginx:alpine + php-fpm 8.3.30 + mariadb:11
+- **Stack**: Docker — nginx:alpine + php-fpm 8.3.30 + mariadb:11. The
+  php-fpm container is pinned to `cpuset=2,3` for the duration of the
+  run via `docker update --cpuset-cpus` and restored on exit.
 - **WordPress**: 6.9.4 (TwentyTwenty-Five active, FSE default theme)
 - **Content**: 90 posts / 93 comments / 6 users — the WordPress
-  theme-test-data WXR fixture plus the Phase 2 block-tier corpus
-  (`profiling/benchmark-content/`)
-- **Patina**: 0.1.0 @ `566ed36`
-- **k6**: 100 post-warmup iterations per scenario per config, plus 5
-  dropped warmup iterations. Sequential (vus=1), cache-busted query
-  string, Host header forced to `localhost:8080` so WP's canonical-URL
-  redirects don't fire
+  theme-test-data WXR fixture plus the expanded block-tier corpus
+  (`profiling/benchmark-content/`): 15 / 30 / 60 blocks @ ~6 / 13 / 25 KB.
+- **Patina**: 0.1.0 @ `c3cb04a`
+- **k6**: single `per-vu-iterations` executor, `vus=1`, round-robins
+  through the 9 scenarios in order. 200 post-warmup iterations per
+  scenario per config, WARMUP=3 cycles dropped per chunk. Cache-busted
+  query string, Host header forced to `localhost:8080` so WP's
+  canonical-URL logic doesn't 301-redirect.
+- **Chunked interleaving**: the runner cycles all configs per chunk,
+  CHUNKS=5, so every `(config, scenario)` pair gets 40 samples per
+  chunk. Within-chunk pairing lets bench-compare use a paired t-test
+  instead of Welch's on otherwise-independent batches — pairing cancels
+  minute-scale host drift and, in practice, moved most p-values by
+  2–3 orders of magnitude vs the unpaired baseline.
 
 ### Configurations
 
@@ -58,8 +116,8 @@ Nine URLs covering the common render paths:
 | Slug | Exercises |
 |---|---|
 | `/` | Homepage / latest-posts loop (10 posts) |
-| `/a-short-block-post/` | ~500 B block single — baseline |
-| `/a-long-block-post/` | ~8 KB block single — parse_blocks win zone |
+| `/a-short-block-post/` | 15 blocks / ~6 KB — baseline single |
+| `/a-long-block-post/` | 60 blocks / ~25 KB — parse_blocks tail |
 | `/a-classic-html-post/` | Pre-Gutenberg HTML — wpautop + kses |
 | `/a-commented-post/` | 20 comments — render-time kses x20 |
 | `/category/announcements/` | Category archive |
@@ -69,106 +127,141 @@ Nine URLs covering the common render paths:
 
 ### Headline numbers (TTFB, ms)
 
-Per-scenario p50 / p95 for the `stock` baseline and `full_patina`
-candidate, n=100 each:
+`parse_blocks_only` vs `stock`, n=200 per cell, paired t-test over
+matched chunk-index pairs. Δ% is relative to `stock`; ↑ = slower.
+The full matrix for all four patina configs is in
+[`fixtures/baselines/phase7-paired/report.md`](../fixtures/baselines/phase7-paired/report.md).
 
-| Scenario | stock p50 / p95 | full_patina p50 / p95 | Δp50 | Δp95 |
-|---|---:|---:|---:|---:|
-| archive_category | 76.2 / 118.9 | 74.4 / 120.7 | −1.8 | +1.8 (+1.6%) |
-| archive_tag | 75.5 / 116.5 | 74.9 / 117.8 | −0.6 | +1.3 (+1.2%) |
-| homepage | 83.9 / 124.4 | 82.4 / 126.1 | −1.6 | +1.6 (+1.3%) |
-| rest_posts | 78.4 / 116.6 | 76.9 / 116.8 | −1.4 | +0.3 (+0.2%) |
-| search | 92.7 / 120.3 | 91.8 / 125.2 | −0.9 | +4.9 (+4.1%) |
-| single_classic | 80.0 / 120.5 | 79.4 / 125.0 | −0.6 | +4.5 (+3.7%) |
-| single_commented | 91.0 / 122.5 | 90.6 / 128.8 | −0.4 | +6.3 (+5.2%) |
-| single_long | 81.4 / 119.1 | 81.1 / 135.5 | −0.3 | +16.4 (+13.7%) |
-| single_short | 79.3 / 117.7 | 79.4 / 114.2 | +0.1 | −3.5 (−3.0%) |
+| Scenario | stock p50 | parse p50 | Δp50 % | Δtmean % | paired p |
+|---|---:|---:|---:|---:|---|
+| archive_category | 28.4 | 28.5 | +0.6 ↑ | +0.7 ↑ | 0.00048 *** |
+| archive_tag | 26.6 | 26.7 | +0.4 ↑ | +0.7 ↑ | 0.00092 *** |
+| homepage | 43.9 | 43.8 | −0.1 | −0.3 | 0.33 |
+| rest_posts | 43.8 | 43.6 | −0.3 | −0.2 | 0.34 |
+| search | 48.2 | 48.1 | −0.1 | +0.1 | 0.34 |
+| single_classic | 34.6 | 34.9 | +0.8 ↑ | +0.9 ↑ | 6.4e-06 *** |
+| single_commented | 45.5 | 45.7 | +0.5 ↑ | +0.6 ↑ | 0.00134 ** |
+| single_long | 36.9 | 37.0 | +0.5 ↑ | +0.7 ↑ | 0.00116 ** |
+| single_short | 35.2 | 35.6 | +1.1 ↑ | +1.1 ↑ | 1.3e-08 *** |
 
-**Every Welch's t-test p-value in the full per-override breakdown
-exceeds 0.33.** The full matrix is in
-`fixtures/baselines/phase6-initial/report.md` with confidence intervals
-for all 36 (config, scenario) pairs.
+`full_patina` vs `stock` shows the same pattern, slightly worse on the
+block-heavy pages: `archive_category` +1.1% (p=1.8e-07),
+`single_classic` +1.2% (p=4.7e-09), `single_short` +1.0% (p=5.7e-08).
+Homepage, rest_posts, and search remain statistically indistinguishable
+from stock (p > 0.068). Stock p95 stddev is now 1.9–3.2% CV across all
+scenarios — tight enough that 0.3 ms deltas are routinely significant.
 
 ### Analysis
 
-1. **Patina's true effect on this workload is smaller than the noise
-   floor at n=100.** The stock `stock` config has p95 jitter of ~10 ms
-   on an ~80 ms TTFB, which is 12% relative noise. A 2–5% patina gain
-   or loss cannot be detected without substantially more samples,
-   lower-jitter infrastructure, or a workload that spends a larger
-   share of each request in the functions patina overrides.
+1. **Bridge overhead currently exceeds Rust savings on 30–50 ms TTFB
+   requests.** The microbenchmark speedups (1.5–6.9× per function call,
+   see `README.md`) are real, but they amortize away the fixed costs
+   that dominate a real HTTP request: per-request `patina_activate()`
+   work, `call_user_func!` round-trips from Rust back to PHP on every
+   `apply_filters` inside the escaping shims, and `has_filter` lookups
+   on every `wp_kses` call. The total of those costs is ~0.3–0.5 ms per
+   request, which is larger than the algorithmic savings from Rust at
+   this workload scale.
 
-2. **p50 trends weakly favor full_patina across most scenarios**
-   (−0.3 to −1.8 ms), but none of these cross significance either. The
-   sign of the effect is consistent enough that a larger-n rerun might
-   surface a 1–2% win, but this is speculation until measured.
+2. **`single_classic` is the canary.** Classic posts contain no blocks,
+   so `parse_blocks` walks an empty body and returns immediately — yet
+   `parse_blocks_only` is +0.9% slower than stock on this scenario with
+   p=6.4e-06. That delta is *pure override-installation overhead*: the
+   cost of having the override present, independent of any useful work
+   the Rust implementation does. Whatever fraction of the 0.3 ms we can
+   remove will show up directly in this cell.
 
-3. **The `single_long` p95 regression (+13.7%, still p=0.77) is the most
-   eye-catching cell but is almost certainly noise.** A single outlier
-   request near the top of the sample set shifts p95 dramatically at
-   n=100; p50 moved by only −0.3 ms on the same cell.
+3. **`single_short` shows the worst relative hit (+1.1%)** because the
+   baseline TTFB is smallest (35 ms) and the fixed bridge cost is the
+   same. Larger pages amortize it better — `single_long` is +0.7%, the
+   archives are +0.7% and marginal.
 
-4. **This matches the April 2026 live-site measurements** recorded in
-   `docs/BENCHMARK_PLAN.md` § "Related project history": bridge overhead
-   on the esc_html / esc_attr / wp_kses paths costs roughly what the
-   Rust implementations save on moderate content, leaving net effect
-   near zero unless a request spends serious time inside `parse_blocks`
-   (which none of these scenarios do — even `/a-long-block-post/` only
-   has ~8 KB of body).
+4. **`homepage` / `rest_posts` / `search` have null results**, which is
+   interesting because they're the scenarios where `parse_blocks` runs
+   the most per request (10 posts per loop × one `parse_blocks` call
+   each). The algorithmic savings there approximately cancel the bridge
+   cost, giving a true effect close to zero. If the action items below
+   land, these should flip from "indistinguishable" to "reliably
+   faster" before the single-post scenarios do.
 
 ### What this means for the project
 
-- **The microbenchmark numbers in `README.md` are still accurate** —
-  the Rust implementations are genuinely 1.5–7× faster per function
-  call — but they overstate the end-to-end effect because they amortize
-  away the activation cost and don't include the bridge overhead.
-- **The bridge-overhead issues listed in `docs/BENCHMARK_PLAN.md`
-  § "Related project history" need fixing before the next bench run is
-  meaningful**: `apply_filters` round-trips on escaping paths,
-  `has_filter` checks on every `wp_kses` call, and the
-  `patina_activate()`-on-every-request cost from the mu-plugin. All
-  three are fixable; none have been fixed yet.
-- **The next re-baseline should land after those fixes**, not before.
-  Measuring noise repeatedly is not informative.
+- **The microbenchmark numbers in `README.md` remain accurate** — the
+  Rust implementations *are* genuinely 1.5–7× faster per isolated
+  function call. But they measure steady-state throughput on cached
+  inputs and don't include the round-trip costs a live request pays.
+  The gap between the two numbers is the bridge-overhead budget.
+- **The benchmark harness is now load-bearing.** A sub-1% regression
+  anywhere in patina will be caught at n=200 with p<0.01. Future
+  changes should be held against `fixtures/baselines/phase7-paired/`
+  with `make bench-compare TO=fixtures/baselines/<new>` — see
+  `scripts/bench-compare.py` for the cross-run mode.
+- **The next re-baseline is meaningful work.** Each action item below
+  should move specific cells by a measurable amount; the benchmark can
+  now attribute those moves to their causes instead of chasing noise.
 
 ### Action items (in priority order)
 
-1. **Cache `patina_activate()` after the first call per FPM worker.**
-   A static flag in the bridge mu-plugin, plus idempotency at the Rust
-   level, should remove the per-request activation cost entirely.
+The "per-request cost" estimates are bounds implied by the phase7-paired
+`single_classic` and `single_short` deltas — they define the budget
+each fix has to recover.
+
+1. ~~**Cache `patina_activate()` after the first call per FPM worker.**~~
+   **Landed in phase8-activation-cached.** Rust-side `AtomicBool` +
+   a `patina_is_activated()` probe from the mu-plugin. The fix
+   removed 0.3–1.7% of TTFB across every patina config, taking
+   `full_patina` from "significantly slower on 6/9 scenarios" to
+   "indistinguishable from stock on 9/9". Commit is in the
+   activation-cache work that accompanied this doc update — see
+   `crates/patina-ext/src/lib.rs` `ACTIVATED` and
+   `php/bridge/patina-bridge.php`.
 2. **Move `apply_filters('esc_html', ...)` back into the PHP shim.**
-   Rust→PHP `call_user_func` is ~10× slower than PHP→PHP dispatch; a
-   shim-level `apply_filters` call costs nothing but a user-function
-   frame.
+   `patina_esc_html_internal` currently fires `apply_filters` via
+   `call_user_func!` from Rust — a Rust→PHP round-trip that is ~10×
+   slower than PHP→PHP dispatch. A `apply_filters()` call from the
+   PHP shim itself is a single user-function frame. Expected impact:
+   ~2–5 µs per `esc_html` / `esc_attr` call × ~100 calls per request =
+   0.2–0.5 ms off the single-post scenarios.
 3. **Cache `has_filter()` results for `wp_kses_allowed_html`,
    `kses_allowed_protocols`, and `wp_kses_uri_attributes`** in a Rust
-   `OnceCell` keyed per-request. These fire on every `wp_kses` call
-   today and dominate the kses path's overhead.
-4. **Re-baseline** at n=200 per scenario, with the three fixes landed.
-   A 2× bump in samples cuts the confidence interval by √2, and the
-   fixes should lift the true effect enough to peek above the noise.
+   `OnceCell` keyed per-request. These currently fire on every
+   `wp_kses` call and dominate the kses path's overhead — especially
+   visible on `single_commented` which renders 20 comments through
+   kses each.
+4. **Re-baseline as `phase8-*`** after each fix lands (one run per fix,
+   not one at the end) so bench-compare cross-run diffs can attribute
+   movement to the right change.
 
 ## How to reproduce
 
-Full matrix, ~15 minutes on the Ryzen above:
+Full matrix, ~11 minutes on the Ryzen above:
 
 ```sh
-./profiling/setup-wordpress.sh                # one-time: seed the corpus
-ITERATIONS=100 make bench-full                # full per-config matrix
-make bench-compare RUN=/tmp/patina-bench/<ts>/  # render the report
+./profiling/setup-wordpress.sh                    # one-time: seed the corpus
+CHUNKS=5 ITERATIONS=200 make bench-full           # full per-config matrix
+make bench-compare RUN=/tmp/patina-bench/<ts>/    # render the report
 ```
+
+The runner pins php-fpm to `cpuset=2,3` automatically (override via
+`CPUSET=x,y`, set `CPUSET=` to disable), writes chunk-split raw k6
+output per config, then calls `bench-aggregate.py` to roll the chunks
+into one `summary.json` per config. The raw `k6-chunk-*.json` files
+are gitignored — committed baselines only track `summary.json`,
+`manifest.json`, and `report.md`.
 
 Baselines (persisted for regression-checking):
 
 ```sh
-make bench-baseline NAME=phase7-after-fixes   # writes to fixtures/baselines/
-git add fixtures/baselines/phase7-after-fixes # review, then commit
-make bench-compare RUN=fixtures/baselines/phase6-initial \
-                   TO=fixtures/baselines/phase7-after-fixes
+CHUNKS=5 ITERATIONS=200 \
+  make bench-baseline NAME=phase8-after-fix     # writes to fixtures/baselines/
+git add fixtures/baselines/phase8-after-fix     # review, then commit
+make bench-compare \
+    RUN=fixtures/baselines/phase7-paired \
+    TO=fixtures/baselines/phase8-after-fix      # cross-run diff
 ```
 
-With SPX flame graphs (adds ~10% overhead to the one profiled sample
-per scenario, rest of samples are clean):
+With SPX flame graphs (adds ~10% overhead to the one profiled cycle
+per scenario; the rest of the samples are clean):
 
 ```sh
 PROFILE=1 make bench-full
@@ -179,4 +272,6 @@ PROFILE=1 make bench-full
 
 | Run | Date | Patina | Host | Headline |
 |---|---|---|---|---|
-| [phase6-initial](../fixtures/baselines/phase6-initial/report.md) | 2026-04-13 | 0.1.0 (`566ed36`) | Ryzen 9 5950X | No config distinguishable from stock at n=100 |
+| [phase6-initial](../fixtures/baselines/phase6-initial/report.md) | 2026-04-13 | 0.1.0 (`566ed36`) | Ryzen 9 5950X | No config distinguishable from stock at n=100 — later traced to k6 running scenarios in parallel and queueing behind `pm.max_children=5`, not a patina effect |
+| [phase7-paired](../fixtures/baselines/phase7-paired/report.md) | 2026-04-15 | 0.1.0 (`c3cb04a`) | Ryzen 9 5950X | Serialized k6 + chunked pairing + cpuset pinning drops stddev to 1.9–3.2% CV. Every patina config is significantly *slower* than stock on 6/9 scenarios (p<0.01); bridge overhead dominates. |
+| [phase8-activation-cached](../fixtures/baselines/phase8-activation-cached/report.md) | 2026-04-15 | 0.1.0 | Ryzen 9 5950X | Activation caching lands. `full_patina` is now indistinguishable from stock on all 9 scenarios (all p > 0.068); `parse_blocks_only` narrows to residual +0.2–0.5% on 2/9 scenarios. Action item #1 complete. |

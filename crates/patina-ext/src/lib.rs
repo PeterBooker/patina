@@ -7,6 +7,7 @@ use ext_php_rs::prelude::*;
 use ext_php_rs::types::{ZendHashTable, Zval};
 
 use std::ffi::c_char;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 mod blocks_bridge;
@@ -27,6 +28,17 @@ unsafe impl Send for FuncPtr {}
 /// Original function pointers saved during activation, keyed by function name.
 /// Used by patina_deactivate() to restore originals.
 static ORIGINALS: Mutex<Vec<(&'static str, FuncPtr)>> = Mutex::new(Vec::new());
+
+/// Worker-level flag: set once `patina_activate()` has installed the
+/// shim + swap set for this FPM worker process. Persists across requests
+/// because Rust statics live for the lifetime of the process, not the
+/// request, so the bridge mu-plugin's `patina_is_activated()` guard
+/// reads it cheaply on every subsequent request and short-circuits the
+/// whole activation path. `patina_deactivate()` clears it.
+///
+/// Not atomic-for-threading (FPM workers are single-threaded) — just
+/// atomic-for-API cleanliness so we don't need `unsafe` to read it.
+static ACTIVATED: AtomicBool = AtomicBool::new(false);
 
 /// Core function overrides. **Every** entry is shimmed via a PHP user
 /// function defined in `PATINA_SHIMS_PHP` — we never swap a target directly
@@ -114,8 +126,26 @@ function __patina_parse_blocks_shim__($content) {
 /// `php/bridge/patina-bridge.php`.
 #[php_function]
 pub fn patina_activate(skip_list: Option<&Zval>) -> PhpResult<i64> {
-    // Idempotency: if any of the shim functions already exist we've
-    // already activated this request, so skip the eval.
+    // Worker-level short-circuit: after the first successful call in
+    // this FPM worker process, the function-table swaps are already in
+    // place and re-running them is pure overhead. The bridge mu-plugin
+    // also checks `patina_is_activated()` to avoid even reaching this
+    // function — the check here is defence-in-depth for direct callers
+    // (integration tests, `make verify`, users calling patina_activate
+    // manually from a mu-plugin of their own).
+    if ACTIVATED.load(Ordering::Relaxed) {
+        // Report "how many slots are currently installed" so callers
+        // that parse the return value (the bench runner does) see a
+        // stable number across requests.
+        return Ok(ORIGINALS.lock().map(|o| o.len() as i64).unwrap_or(0));
+    }
+
+    // First call: eval the shim PHP once and swap the function table.
+    // The `php_function_exists` guard is kept because an earlier
+    // `patina_deactivate()` call clears ACTIVATED but leaves the shim
+    // user functions defined in the worker's function table — we don't
+    // want to re-eval and trip "Cannot redeclare function" on the
+    // re-activation path.
     if !php_function_exists("__patina_wp_kses_shim__") {
         if let Err(e) = ext_php_rs::php_eval::execute(PATINA_SHIMS_PHP) {
             return Err(PhpException::default(format!(
@@ -139,7 +169,19 @@ pub fn patina_activate(skip_list: Option<&Zval>) -> PhpResult<i64> {
         }
     }
 
+    ACTIVATED.store(true, Ordering::Relaxed);
     Ok(count)
+}
+
+/// Returns true if `patina_activate()` has already installed its shim
+/// set in this FPM worker process. Used by `php/bridge/patina-bridge.php`
+/// to short-circuit the whole activation path on every request after
+/// the first one — a single cheap PHP→Rust boundary call that returns
+/// an atomic load, vs the full skip-list build + `patina_activate()`
+/// invocation that runs on the first request.
+#[php_function]
+pub fn patina_is_activated() -> bool {
+    ACTIVATED.load(Ordering::Relaxed)
 }
 
 /// Check whether a PHP function exists in the current function table.
@@ -178,6 +220,8 @@ pub fn patina_deactivate() -> PhpResult<i64> {
         }
     }
 
+    // Allow a subsequent `patina_activate()` to re-install the swaps.
+    ACTIVATED.store(false, Ordering::Relaxed);
     Ok(count)
 }
 
@@ -540,6 +584,7 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         .function(wrap_function!(patina_version))
         .function(wrap_function!(patina_loaded))
         .function(wrap_function!(patina_activate))
+        .function(wrap_function!(patina_is_activated))
         .function(wrap_function!(patina_deactivate))
         .function(wrap_function!(patina_status))
         // escaping (raw — no filters, for benchmarks / direct use)
