@@ -95,8 +95,7 @@ bench-http: ## Run HTTP-level bench (k6 against the profiling stack)
 		echo "Output: $$RUN_DIR/k6-output.json"
 
 bench-full: ## Run the full per-config bench matrix (stock + 4 patina configs)
-	@ITERATIONS=$${ITERATIONS:-100} WARMUP=$${WARMUP:-5} \
-		CONFIGS=$${CONFIGS:-stock,esc_only,kses_only,parse_blocks_only,full_patina} \
+	@CONFIGS=$${CONFIGS:-stock,esc_only,kses_only,parse_blocks_only,full_patina} \
 		bash scripts/bench-runner.sh
 
 bench-compare: ## Compare one run (intra) or two runs (cross). Usage: make bench-compare RUN=/tmp/... [TO=/tmp/...]
@@ -109,7 +108,7 @@ bench-compare: ## Compare one run (intra) or two runs (cross). Usage: make bench
 
 bench-baseline: ## Run bench-full and commit the result under fixtures/baselines/
 	@if [ -z "$${NAME:-}" ]; then echo "usage: make bench-baseline NAME=phase6-initial"; exit 2; fi
-	@RUN_DIR=fixtures/baselines/$${NAME} ITERATIONS=$${ITERATIONS:-100} WARMUP=$${WARMUP:-5} \
+	@RUN_DIR=fixtures/baselines/$${NAME} \
 		bash scripts/bench-runner.sh
 	@echo "Baseline written to fixtures/baselines/$${NAME}"
 	@echo "Review and git add fixtures/baselines/$${NAME} when you're happy with it."

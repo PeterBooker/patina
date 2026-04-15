@@ -31,9 +31,18 @@ TRACKED_METRICS = {
 }
 
 
-def load_samples(k6_json_path: pathlib.Path) -> dict[str, dict[str, list[float]]]:
-    """Return {scenario: {metric: [values]}} from a k6 --out json= stream."""
-    per_scenario: dict[str, dict[str, list[float]]] = {}
+def load_samples(
+    k6_json_path: pathlib.Path,
+    per_scenario: dict[str, dict[str, list[float]]] | None = None,
+) -> dict[str, dict[str, list[float]]]:
+    """Return {scenario: {metric: [values]}} from a k6 --out json= stream.
+
+    If `per_scenario` is passed in, samples are appended to that dict so
+    the caller can fold multiple chunk files into one stream. The runner
+    relies on this to keep chunk order intact across the per-config
+    k6-chunk-XX.json files."""
+    if per_scenario is None:
+        per_scenario = {}
 
     with k6_json_path.open("r", encoding="utf-8") as fh:
         for line_num, raw in enumerate(fh, start=1):
@@ -120,7 +129,16 @@ def summarize(values: list[float]) -> dict[str, Any]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--k6-json", required=True, type=pathlib.Path)
+    ap.add_argument(
+        "--k6-json",
+        required=True,
+        type=pathlib.Path,
+        nargs="+",
+        help="One or more k6 JSON output files. Pass chunks in order — "
+             "aggregator records per-sample chunk index for the paired "
+             "analysis in bench-compare.",
+    )
+    ap.add_argument("--chunks", type=int, default=1)
     ap.add_argument("--output", required=True, type=pathlib.Path)
     ap.add_argument("--config-name", required=True)
     ap.add_argument(
@@ -143,17 +161,41 @@ def main() -> int:
     ap.add_argument("--iterations", type=int, default=0)
     args = ap.parse_args()
 
-    if not args.k6_json.exists():
-        print(f"error: k6 JSON not found: {args.k6_json}", file=sys.stderr)
-        return 1
-
-    per_scenario = load_samples(args.k6_json)
+    # Each chunk file contributes samples in scenario-k6-execution order.
+    # Track the sample count per (scenario, metric) before and after each
+    # file so we know which samples belong to which chunk — the comparator
+    # needs this to pair baseline[i] with candidate[i] within the same
+    # chunk boundary.
+    per_scenario: dict[str, dict[str, list[float]]] = {}
+    chunk_ids: dict[str, dict[str, list[int]]] = {}
+    for chunk_idx, path in enumerate(args.k6_json):
+        if not path.exists():
+            print(f"error: k6 JSON not found: {path}", file=sys.stderr)
+            return 1
+        before: dict[str, dict[str, int]] = {
+            scn: {m: len(v) for m, v in metrics.items()}
+            for scn, metrics in per_scenario.items()
+        }
+        load_samples(path, per_scenario)
+        for scn, metrics in per_scenario.items():
+            for m, values in metrics.items():
+                prev = before.get(scn, {}).get(m, 0)
+                added = len(values) - prev
+                chunk_ids.setdefault(scn, {}).setdefault(m, []).extend(
+                    [chunk_idx] * added
+                )
 
     scenarios_out: dict[str, Any] = {}
     for scenario, metrics in sorted(per_scenario.items()):
+        ttfb_vals = metrics.get("ttfb_ms", [])
+        total_vals = metrics.get("total_ms", [])
+        ttfb_summary = summarize(ttfb_vals)
+        total_summary = summarize(total_vals)
+        ttfb_summary["chunk_ids"] = chunk_ids.get(scenario, {}).get("ttfb_ms", [])
+        total_summary["chunk_ids"] = chunk_ids.get(scenario, {}).get("total_ms", [])
         scenarios_out[scenario] = {
-            "ttfb_ms": summarize(metrics.get("ttfb_ms", [])),
-            "total_ms": summarize(metrics.get("total_ms", [])),
+            "ttfb_ms": ttfb_summary,
+            "total_ms": total_summary,
         }
 
     try:
@@ -175,6 +217,7 @@ def main() -> int:
             "host": args.host,
             "cpu": args.cpu,
             "iterations_per_scenario": args.iterations,
+            "chunks": args.chunks,
         },
         "config": {
             "name": args.config_name,

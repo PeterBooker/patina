@@ -23,6 +23,17 @@ docker-compose.override.yml
 /profiling/output/
 *.cachegrind
 *.spx
+# Raw k6 chunk files written by scripts/bench-runner.sh during a run.
+# bench-aggregate.py rolls them into summary.json and the chunk files
+# have no downstream use — committed baselines only track summary.json,
+# manifest.json, and report.md.
+fixtures/baselines/**/k6-chunk-*.json
+
+# Python bytecode cache
+__pycache__/
+
+# Claude Code runtime state (per-session lock; was committed by mistake)
+.claude/scheduled_tasks.lock
 
 # Editor/IDE
 .idea/

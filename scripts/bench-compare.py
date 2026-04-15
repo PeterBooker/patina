@@ -15,14 +15,23 @@ Two modes, auto-detected from the arguments:
 
 Output is written to stdout as GitHub-flavored markdown, plus an
 optional machine-readable JSON blob via --json-out. Exit code is nonzero
-if `--fail-on-regress PCT` is set and any p95 regressed by more than
-PCT percent on any scenario.
+if `--fail-on-regress PCT` is set and any trimmed-mean regressed by more
+than PCT percent on any scenario (trimmed mean rather than p95 because
+p95 is too noisy at n≤200 to drive CI pass/fail — see docstring below).
 
-Welch's t-test is computed for each (config, scenario) pair. We use a
-normal approximation for the p-value when df >= 30 (which it will be for
-n=100 samples, the default runner config) — accurate to ~1e-3 at that
-sample size and avoids a scipy dependency. For smaller samples the
-test still reports t and df so the reader can interpret by eye.
+For intra-run comparisons where baseline and candidate come from the
+same chunked run (same CHUNKS, same CHUNK_ITERS, same scenario order),
+the reporter runs a *paired* t-test on per-sample deltas. Pairing
+cancels chunk-level thermal/host drift and is typically 2–3× more
+powerful than Welch's on real bench data. When sample counts don't
+match (or chunk_ids are missing — cross-run mode), we fall back to
+Welch's unpaired test.
+
+Headline metrics are **p50** and a **10%-trimmed mean**. p95 is
+reported but demoted to a tail-check column: at n=100 its confidence
+interval is huge and a single outlier request can flip its sign, so
+basing pass/fail on it leads to the noise-chasing we saw in
+phase6-initial.
 """
 from __future__ import annotations
 
@@ -47,6 +56,43 @@ def sample_variance(xs: list[float], mu: float) -> float:
     if len(xs) < 2:
         return 0.0
     return sum((x - mu) ** 2 for x in xs) / (len(xs) - 1)
+
+
+def trimmed_mean(xs: list[float], trim: float = 0.10) -> float:
+    """Symmetric trimmed mean. Drops `trim` fraction from each tail."""
+    if not xs:
+        return float("nan")
+    n = len(xs)
+    k = int(n * trim)
+    if n - 2 * k <= 0:
+        return mean(xs)
+    srt = sorted(xs)
+    return mean(srt[k : n - k])
+
+
+def paired_t(a: list[float], b: list[float]) -> tuple[float, float, float, float]:
+    """Return (mean_delta, t, df, p_two_sided) for paired samples.
+
+    Pairs element-wise: expects len(a) == len(b) and same chunk ordering
+    (runner guarantees this because each chunk emits samples in the same
+    scenario-iteration order for every config).
+    """
+    if len(a) != len(b) or not a:
+        return (float("nan"), float("nan"), 0.0, float("nan"))
+    diffs = [bi - ai for ai, bi in zip(a, b)]
+    n = len(diffs)
+    md = mean(diffs)
+    if n < 2:
+        return (md, float("nan"), 0.0, float("nan"))
+    var = sample_variance(diffs, md)
+    if var <= 0:
+        return (md, float("nan"), float(n - 1), float("nan"))
+    se = math.sqrt(var / n)
+    t = md / se
+    df = float(n - 1)
+    z = abs(t)
+    p = 2.0 * (1.0 - _phi(z))
+    return (md, t, df, p)
 
 
 def welch_t(a: list[float], b: list[float]) -> tuple[float, float, float, float]:
@@ -115,44 +161,71 @@ def discover_configs(run_dir: pathlib.Path) -> dict[str, dict[str, Any]]:
 # Report rendering
 # ----------------------------------------------------------------------
 
+TABLE_HEADER = (
+    "| Scenario | n | base p50 → cand | Δp50 % | base tmean → cand | Δtmean % | test | p95 Δ % |"
+)
+TABLE_DIVIDER = "|---|---:|---|---:|---|---:|---|---:|"
+
+
 def format_delta_row(
     scenario: str,
     baseline_samples: list[float],
     candidate_samples: list[float],
+    paired: bool,
 ) -> tuple[str, float]:
-    """Return (markdown_row, percent_delta). percent_delta is nan if undefined."""
+    """Return (markdown_row, pct_tmean). pct_tmean is nan if undefined.
+
+    `paired` selects paired-t vs Welch's t. The runner passes paired=True
+    for intra-run comparisons (same chunked run — indices match across
+    configs) and paired=False for cross-run diffs.
+    """
     if not baseline_samples or not candidate_samples:
         return (
-            f"| {scenario} | (no samples) | | | | |",
+            f"| {scenario} | 0 | (no samples) | | | | | |",
             float("nan"),
         )
 
+    n = min(len(baseline_samples), len(candidate_samples))
     base_p50 = _percentile(baseline_samples, 50)
     cand_p50 = _percentile(candidate_samples, 50)
     base_p95 = _percentile(baseline_samples, 95)
     cand_p95 = _percentile(candidate_samples, 95)
-    delta_p50 = cand_p50 - base_p50
-    delta_p95 = cand_p95 - base_p95
-    pct_p95 = (delta_p95 / base_p95 * 100.0) if base_p95 else float("nan")
-    _, _, df, p = welch_t(baseline_samples, candidate_samples)
+    base_tm = trimmed_mean(baseline_samples)
+    cand_tm = trimmed_mean(candidate_samples)
+
+    pct_p50 = ((cand_p50 - base_p50) / base_p50 * 100.0) if base_p50 else float("nan")
+    pct_tm = ((cand_tm - base_tm) / base_tm * 100.0) if base_tm else float("nan")
+    pct_p95 = ((cand_p95 - base_p95) / base_p95 * 100.0) if base_p95 else float("nan")
+
+    if paired and len(baseline_samples) == len(candidate_samples):
+        _, _, df, p = paired_t(baseline_samples, candidate_samples)
+        test = "paired"
+    else:
+        _, _, df, p = welch_t(baseline_samples, candidate_samples)
+        test = "welch"
     marker = sig_marker(p)
 
-    arrow = ""
-    if not math.isnan(pct_p95):
-        if pct_p95 <= -1:
-            arrow = " ↓"  # faster (candidate less than baseline)
-        elif pct_p95 >= 1:
-            arrow = " ↑"  # slower
+    def arrow(pct: float) -> str:
+        if math.isnan(pct):
+            return ""
+        if pct <= -1:
+            return " ↓"
+        if pct >= 1:
+            return " ↑"
+        return ""
+
     return (
         (
             f"| {scenario} "
-            f"| {base_p50:.1f} / {base_p95:.1f} "
-            f"| {cand_p50:.1f} / {cand_p95:.1f} "
-            f"| {delta_p50:+.1f} "
-            f"| {delta_p95:+.1f} ({pct_p95:+.1f}%){arrow} "
-            f"| p={p:.3g} df={df:.0f} {marker} |"
+            f"| {n} "
+            f"| {base_p50:.1f} → {cand_p50:.1f} "
+            f"| {pct_p50:+.1f}{arrow(pct_p50)} "
+            f"| {base_tm:.1f} → {cand_tm:.1f} "
+            f"| {pct_tm:+.1f}{arrow(pct_tm)} "
+            f"| {test} p={p:.3g} {marker} "
+            f"| {pct_p95:+.1f}{arrow(pct_p95)} |"
         ),
-        pct_p95,
+        pct_tm,
     )
 
 
@@ -201,7 +274,7 @@ def render_intra_run(
         f"- Iterations per scenario: {meta.get('iterations_per_scenario', '?')}",
         f"- Baseline config: **{baseline_name}**",
         "",
-        "Metric legend: `p50 / p95` in ms. `Δp95 %` is (candidate − baseline) / baseline × 100. `*`=p<0.05, `**`=p<0.01, `***`=p<0.001 (Welch's t-test, normal-approx p-value). ↓ means faster than baseline, ↑ means slower.",
+        "Headline metrics: **p50** (median) and **tmean** (10%-trimmed mean, drops the 10 fastest + 10 slowest samples before averaging). Both are robust to single-request outliers. `Δ %` is (cand − base) / base × 100; ↓ = faster, ↑ = slower. The `p95 Δ %` column is kept as a tail-latency check but is **not** the pass/fail signal — its confidence interval at n≤200 is too wide to base decisions on. `*`=p<0.05, `**`=p<0.01, `***`=p<0.001; intra-run rows use a paired t-test (each sample paired by chunk-matched index against the stock config), cross-run rows use Welch's.",
         "",
     ]
 
@@ -225,18 +298,14 @@ def render_intra_run(
                     rel = p.relative_to(run_dir)
                     lines.append(f"- `{rel}`")
         lines.append("")
-        lines.append(
-            "| Scenario | baseline p50 / p95 | candidate p50 / p95 | Δp50 | Δp95 | stats |"
-        )
-        lines.append(
-            "|---|---|---|---:|---:|---|"
-        )
+        lines.append(TABLE_HEADER)
+        lines.append(TABLE_DIVIDER)
 
         scenarios = sorted(set(baseline.get("scenarios", {})) | set(summary.get("scenarios", {})))
         for scenario in scenarios:
             base_samples = samples_for(baseline, scenario, "ttfb_ms")
             cand_samples = samples_for(summary, scenario, "ttfb_ms")
-            row, pct = format_delta_row(scenario, base_samples, cand_samples)
+            row, pct = format_delta_row(scenario, base_samples, cand_samples, paired=True)
             lines.append(row)
             if not math.isnan(pct) and pct > worst_regression_pct:
                 worst_regression_pct = pct
@@ -282,19 +351,15 @@ def render_cross_run(
         b = summaries_b[config]
         lines.append(f"## {config}")
         lines.append("")
-        lines.append(
-            "| Scenario | before p50 / p95 | after p50 / p95 | Δp50 | Δp95 | stats |"
-        )
-        lines.append(
-            "|---|---|---|---:|---:|---|"
-        )
+        lines.append(TABLE_HEADER)
+        lines.append(TABLE_DIVIDER)
         scenarios = sorted(
             set(a.get("scenarios", {})) | set(b.get("scenarios", {}))
         )
         for scenario in scenarios:
             base = samples_for(a, scenario, "ttfb_ms")
             cand = samples_for(b, scenario, "ttfb_ms")
-            row, pct = format_delta_row(scenario, base, cand)
+            row, pct = format_delta_row(scenario, base, cand, paired=False)
             lines.append(row)
             if not math.isnan(pct) and pct > worst_regression_pct:
                 worst_regression_pct = pct
@@ -325,7 +390,7 @@ def main() -> int:
         "--fail-on-regress",
         type=float,
         default=None,
-        help="Exit nonzero if any p95 regressed by more than this percent",
+        help="Exit nonzero if any trimmed-mean regressed by more than this percent",
     )
     ap.add_argument("--output", type=pathlib.Path, help="Write markdown to this file")
     args = ap.parse_args()
@@ -357,7 +422,7 @@ def main() -> int:
 
     if args.fail_on_regress is not None and worst_pct > args.fail_on_regress:
         print(
-            f"\nFAIL: worst p95 regression {worst_pct:+.1f}% exceeds threshold "
+            f"\nFAIL: worst trimmed-mean regression {worst_pct:+.1f}% exceeds threshold "
             f"{args.fail_on_regress:+.1f}%",
             file=sys.stderr,
         )

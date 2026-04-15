@@ -1,9 +1,13 @@
 // Patina HTTP benchmark workloads.
 //
 // Phase 1 of docs/BENCHMARK_PLAN.md — per-scenario TTFB and total-duration
-// measurement against the profiling stack's nginx. One `per-vu-iterations`
-// executor per scenario so samples are sequential (no contention) and
-// directly comparable across configurations.
+// measurement against the profiling stack's nginx. A single `per-vu-iterations`
+// executor with vus=1 cycles through the scenario list in order, which
+// guarantees strictly sequential requests (no queueing against
+// pm.max_children). Previously each scenario had its own executor with no
+// startTime, which k6 interprets as "start simultaneously" — with 9
+// scenarios and 5 FPM workers that caused 4 requests per round to queue,
+// adding tens of ms of queue-wait variance that swamped any patina signal.
 //
 // Run it via `make bench-http`, which wires in --out json= and the right
 // BASE_URL / ITERATIONS env vars. Direct invocation also works:
@@ -69,38 +73,40 @@ const ttfb = new Trend('patina_ttfb_ms', true);
 const total = new Trend('patina_total_ms', true);
 const errors = new Counter('patina_errors');
 
-// One k6 scenario per URL. `per-vu-iterations` with vus=1 runs samples
-// strictly sequentially so measurements aren't confounded by concurrency.
-// Scenarios fire back-to-back in the order declared — k6 interleaves them
-// if `startTime` is unset, but per-scenario iteration counts keep the total
-// sample count deterministic.
-function buildScenarios() {
-    const out = {};
-    for (const s of SCENARIOS) {
-        out[s.name] = {
-            executor: 'per-vu-iterations',
-            vus: 1,
-            iterations: ITERATIONS + WARMUP,
-            maxDuration: '10m',
-            exec: 'runScenario',
-            env: { SCENARIO_NAME: s.name, SCENARIO_PATH: s.path },
-            tags: { scenario: s.name },
-        };
-    }
-    return out;
-}
+// Single scenario, single VU. __ITER cycles through SCENARIOS in order
+// so requests are strictly sequential and every scenario shares the same
+// minute-scale time slice within a chunk. Total iterations = (WARMUP +
+// ITERATIONS) × SCENARIOS.length: the outer round-robin means one "cycle"
+// hits every URL once, and we emit the first WARMUP cycles to the
+// drop-bucket. Metrics are still tagged per-scenario so bench-aggregate
+// buckets them the same way as before.
+const TOTAL_ITERS = (ITERATIONS + WARMUP) * SCENARIOS.length;
 
 export const options = {
-    scenarios: buildScenarios(),
+    scenarios: {
+        sequential: {
+            executor: 'per-vu-iterations',
+            vus: 1,
+            iterations: TOTAL_ITERS,
+            maxDuration: '30m',
+            exec: 'runAll',
+        },
+    },
     // No global thresholds — the bench-compare tool in Phase 4 owns
     // pass/fail decisions against a persisted baseline.
     discardResponseBodies: false,
     summaryTrendStats: ['min', 'avg', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
 };
 
-export function runScenario() {
-    const name = __ENV.SCENARIO_NAME;
-    const path = __ENV.SCENARIO_PATH;
+export function runAll() {
+    // Round-robin: cycle[c] = __ITER // N, scenarioIdx = __ITER % N.
+    // cycle 0..WARMUP-1 are dropped; cycles WARMUP..(WARMUP+ITERATIONS-1)
+    // are the measured samples.
+    const scnIdx = __ITER % SCENARIOS.length;
+    const cycle = Math.floor(__ITER / SCENARIOS.length);
+    const scn = SCENARIOS[scnIdx];
+    const name = scn.name;
+    const path = scn.path;
     const sep = path.includes('?') ? '&' : '?';
     const url = `${BASE_URL}${path}${sep}t=${__ITER}_${__VU}_${Date.now()}`;
 
@@ -109,16 +115,15 @@ export function runScenario() {
         timeout: '30s',
         headers: { Host: HOST_HEADER },
     };
-    // SPX profile trigger — single iteration per scenario. SPX tags the
-    // profile with the request URL, and we included the scenario name in
-    // the SPX_UI_REPORT_KEY cookie so the runner's post-hoc copy step can
-    // match profiles back to their originating scenario.
-    if (SPX_KEY && __ITER === SPX_PROFILE_ITER) {
-        params.cookies = {
-            SPX_ENABLED: '1',
-            SPX_KEY: SPX_KEY,
-            SPX_UI_URI: '/',
-            SPX_REPORT_KEY: `patina_bench_${name}`,
+    // SPX profile trigger — one profiled cycle only, picked to be the
+    // first post-warmup cycle (so the profile captures a steady-state
+    // request, not a cold-opcache outlier).
+    if (SPX_KEY && cycle === SPX_PROFILE_ITER) {
+        params.headers = {
+            ...params.headers,
+            'SPX-Enabled': '1',
+            'SPX-Key': SPX_KEY,
+            'SPX-Report-Key': `patina_bench_${name}`,
         };
     }
     const res = http.get(url, params);
@@ -130,13 +135,13 @@ export function runScenario() {
 
     if (!ok) {
         errors.add(1, { scenario: name });
-        // Keep going — one 500 shouldn't abort the run, but we log it.
         console.warn(`${name} failed: status=${res.status} len=${res.body ? res.body.length : 0}`);
     }
 
-    // Drop warmup iterations from the metrics so opcache / WP object cache
-    // warmup doesn't skew the baseline.
-    if (__ITER >= WARMUP) {
+    // Drop the first WARMUP cycles — every scenario's first N samples are
+    // cold-opcache / cold-realpath-cache outliers we don't want in the
+    // summary statistics.
+    if (cycle >= WARMUP) {
         ttfb.add(res.timings.waiting, { scenario: name });
         total.add(res.timings.duration, { scenario: name });
     }
