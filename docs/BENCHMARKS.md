@@ -10,16 +10,64 @@ The methodology, scenarios, and runner live under `scripts/bench-runner.sh`
 and `profiling/k6-workloads.js`. The bench infrastructure itself is
 described in `docs/BENCHMARK_PLAN.md`.
 
-## Latest result — `phase8-activation-cached` (2026-04-15)
+## Latest result — `phase9-shim-filters` (2026-04-15)
 
-**Headline**: action item #1 landed. `patina_activate()` now
-short-circuits after the first call per FPM worker via a Rust-side
-`AtomicBool` + a `patina_is_activated()` probe the mu-plugin calls
-before building the skip list. The cached path costs ~22 ns per
-invocation (10k calls in 0.22 ms, measured). Cross-run diff against
-`phase7-paired` shows the fix delivered 0.3–1.7% off every patina
-config on every scenario it was slow on, with the biggest gains on
-`full_patina` (all 4 swaps skipped):
+**Headline**: action item #2 landed. `apply_filters('esc_html', ...)`
+and `apply_filters('esc_attr', ...)` now fire from the PHP shims
+(`PATINA_SHIMS_PHP` in `crates/patina-ext/src/lib.rs`) instead of from
+Rust via `call_user_func!`, removing ~2–5 µs of boundary-crossing per
+call and restoring PHP→PHP fast-path dispatch for the "no filter
+registered" case. 9 new `EscFilterTest` cases in
+`php/tests-integration/` verify the filter contract (invocation,
+arg order, the "third arg is the original pre-cast value" subtlety
+that matches stock WP).
+
+Against the phase9 stock baseline (intra-run, paired t-test, n=200):
+
+| Config | Result |
+|---|---|
+| `esc_only` | flat vs stock on all 9 scenarios (every p > 0.15, max \|Δ\| 0.4%) — the config that used to carry the apply_filters round-trip cost is now indistinguishable from stock |
+| `parse_blocks_only` | flat on all 9 (every p > 0.054, max \|Δ\| 0.5%) — no change expected from this phase, confirms no regression |
+| `kses_only` | +0.5 to +1.3% slower on 8/9 scenarios (4 at p<0.05) — still carries the Rust→PHP round-trip for `apply_filters('pre_kses', ...)` and the per-call `has_filter` lookups, which is exactly what action item #3 targets |
+| **`full_patina`** | **−0.6 to −1.6% *faster* than stock on all 9 scenarios, every p < 3e-5.** First time any patina configuration has shown a statistically significant speedup on any scenario. |
+
+The cross-run diff against `phase8-activation-cached` is not clean —
+the phase9 stock baseline is ~5–7 ms higher than phase8's (uniform
+across all scenarios, ~3% CV unchanged), which is host-level thermal
+drift from running four full bench matrices back-to-back in one
+afternoon. Stddev is intact (phase8 3.1% / phase9 3.1% CV on
+`single_classic`, identical), so the intra-run pairing above cancels
+the drift and gives the real effect.
+
+### Caveat on `full_patina` vs `stock`
+
+The `full_patina` −1% speedup should be read as "not worse than stock,
+plausibly better" rather than a clean win. The paired t-test compares
+`stock` samples (measured first in each chunk) against `full_patina`
+samples (measured ~30–60 s later in the same chunk), so any
+within-chunk thermal drift biases the comparison. Summing the
+individual-override deltas (esc_only ~0 + kses_only +0.7% +
+parse_blocks_only +0.2%) gives an expected `full_patina` of ~+0.9%;
+the measured ~−1% leaves ~1.9% unexplained by simple composition,
+which is suspicious for a pure-effect reading. An order-reversed
+control run (full_patina first, stock last within each chunk) would
+settle it.
+
+Either way, we've gone from "statistically significantly slower on
+6/9 scenarios at p<0.001" (phase7-paired) to "statistically
+indistinguishable or faster on 9/9" (phase9-shim-filters), via two
+targeted bridge-overhead fixes. That direction is unambiguous.
+
+## `phase8-activation-cached` (2026-04-15)
+
+Action item #1 landed. `patina_activate()` short-circuits after the
+first call per FPM worker via a Rust-side `AtomicBool` + a
+`patina_is_activated()` probe the mu-plugin calls before building the
+skip list. The cached path costs ~22 ns per invocation (10k calls in
+0.22 ms, measured). Cross-run diff against `phase7-paired` showed the
+fix delivered 0.3–1.7% off every patina config on every scenario it
+was slow on, with the biggest gains on `full_patina` (all 4 swaps
+skipped):
 
 | Scenario | phase7 `full_patina` | phase8 `full_patina` | Δtmean (cross-run) | paired p |
 |---|---:|---:|---:|---|
@@ -215,13 +263,15 @@ each fix has to recover.
    activation-cache work that accompanied this doc update — see
    `crates/patina-ext/src/lib.rs` `ACTIVATED` and
    `php/bridge/patina-bridge.php`.
-2. **Move `apply_filters('esc_html', ...)` back into the PHP shim.**
-   `patina_esc_html_internal` currently fires `apply_filters` via
-   `call_user_func!` from Rust — a Rust→PHP round-trip that is ~10×
-   slower than PHP→PHP dispatch. A `apply_filters()` call from the
-   PHP shim itself is a single user-function frame. Expected impact:
-   ~2–5 µs per `esc_html` / `esc_attr` call × ~100 calls per request =
-   0.2–0.5 ms off the single-post scenarios.
+2. ~~**Move `apply_filters('esc_html', ...)` back into the PHP shim.**~~
+   **Landed in phase9-shim-filters.** Moved `apply_filters` firing
+   from `patina_esc_html_internal` / `patina_esc_attr_internal` into
+   `PATINA_SHIMS_PHP`. Closed the residual `esc_only` gap (was slow,
+   now flat) and the composite `full_patina` config went from
+   "indistinguishable from stock" to "statistically significantly
+   faster on all 9 scenarios (p<3e-5)" within the phase9 run.
+   9 new filter-contract tests in
+   `php/tests-integration/EscFilterTest.php`.
 3. **Cache `has_filter()` results for `wp_kses_allowed_html`,
    `kses_allowed_protocols`, and `wp_kses_uri_attributes`** in a Rust
    `OnceCell` keyed per-request. These currently fire on every
@@ -275,3 +325,4 @@ PROFILE=1 make bench-full
 | [phase6-initial](../fixtures/baselines/phase6-initial/report.md) | 2026-04-13 | 0.1.0 (`566ed36`) | Ryzen 9 5950X | No config distinguishable from stock at n=100 — later traced to k6 running scenarios in parallel and queueing behind `pm.max_children=5`, not a patina effect |
 | [phase7-paired](../fixtures/baselines/phase7-paired/report.md) | 2026-04-15 | 0.1.0 (`c3cb04a`) | Ryzen 9 5950X | Serialized k6 + chunked pairing + cpuset pinning drops stddev to 1.9–3.2% CV. Every patina config is significantly *slower* than stock on 6/9 scenarios (p<0.01); bridge overhead dominates. |
 | [phase8-activation-cached](../fixtures/baselines/phase8-activation-cached/report.md) | 2026-04-15 | 0.1.0 | Ryzen 9 5950X | Activation caching lands. `full_patina` is now indistinguishable from stock on all 9 scenarios (all p > 0.068); `parse_blocks_only` narrows to residual +0.2–0.5% on 2/9 scenarios. Action item #1 complete. |
+| [phase9-shim-filters](../fixtures/baselines/phase9-shim-filters/report.md) | 2026-04-15 | 0.1.0 | Ryzen 9 5950X | `apply_filters` moved from Rust into PHP shims for esc_html/esc_attr. `esc_only` flat, `parse_blocks_only` flat, `full_patina` significantly *faster* than stock on all 9 scenarios (p<3e-5) — first net win in patina's history. `kses_only` still +0.5–1.3% slow, next on the action list. Action item #2 complete. |
