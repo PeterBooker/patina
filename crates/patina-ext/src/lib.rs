@@ -7,6 +7,7 @@ use ext_php_rs::prelude::*;
 use ext_php_rs::types::{ZendHashTable, Zval};
 
 use std::ffi::c_char;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 mod blocks_bridge;
@@ -27,6 +28,17 @@ unsafe impl Send for FuncPtr {}
 /// Original function pointers saved during activation, keyed by function name.
 /// Used by patina_deactivate() to restore originals.
 static ORIGINALS: Mutex<Vec<(&'static str, FuncPtr)>> = Mutex::new(Vec::new());
+
+/// Worker-level flag: set once `patina_activate()` has installed the
+/// shim + swap set for this FPM worker process. Persists across requests
+/// because Rust statics live for the lifetime of the process, not the
+/// request, so the bridge mu-plugin's `patina_is_activated()` guard
+/// reads it cheaply on every subsequent request and short-circuits the
+/// whole activation path. `patina_deactivate()` clears it.
+///
+/// Not atomic-for-threading (FPM workers are single-threaded) — just
+/// atomic-for-API cleanliness so we don't need `unsafe` to read it.
+static ACTIVATED: AtomicBool = AtomicBool::new(false);
 
 /// Core function overrides. **Every** entry is shimmed via a PHP user
 /// function defined in `PATINA_SHIMS_PHP` — we never swap a target directly
@@ -73,10 +85,19 @@ const SHIM_OVERRIDES: &[(&str, &str)] = &[
 ///   implementation class (as `parse_blocks` does with `block_parser_class`).
 const PATINA_SHIMS_PHP: &str = r#"<?php
 function __patina_esc_html_shim__($text) {
-    return patina_esc_html_internal((string) $text);
+    // Byte-for-byte mirror of WordPress's stock esc_html():
+    //   $safe_text = _wp_specialchars( wp_check_invalid_utf8( $text ), ENT_QUOTES );
+    //   return apply_filters( 'esc_html', $safe_text, $text );
+    // The Rust internal handles the sanitization; the filter call stays
+    // at the PHP layer so we don't round-trip Rust->PHP on every esc_html
+    // call. call_user_func from Rust costs ~2-5 µs per invocation, vs ~ns
+    // for an in-PHP apply_filters fast path when no filter is registered.
+    // Third arg is the *original* $text (not the string-cast), matching
+    // stock WP — some filters inspect the pre-cast value.
+    return apply_filters('esc_html', patina_esc_html_internal((string) $text), $text);
 }
 function __patina_esc_attr_shim__($text) {
-    return patina_esc_attr_internal((string) $text);
+    return apply_filters('esc_attr', patina_esc_attr_internal((string) $text), $text);
 }
 function __patina_wp_kses_shim__($content, $allowed_html, $allowed_protocols = array()) {
     return patina_wp_kses_internal((string) $content, $allowed_html, $allowed_protocols);
@@ -114,8 +135,26 @@ function __patina_parse_blocks_shim__($content) {
 /// `php/bridge/patina-bridge.php`.
 #[php_function]
 pub fn patina_activate(skip_list: Option<&Zval>) -> PhpResult<i64> {
-    // Idempotency: if any of the shim functions already exist we've
-    // already activated this request, so skip the eval.
+    // Worker-level short-circuit: after the first successful call in
+    // this FPM worker process, the function-table swaps are already in
+    // place and re-running them is pure overhead. The bridge mu-plugin
+    // also checks `patina_is_activated()` to avoid even reaching this
+    // function — the check here is defence-in-depth for direct callers
+    // (integration tests, `make verify`, users calling patina_activate
+    // manually from a mu-plugin of their own).
+    if ACTIVATED.load(Ordering::Relaxed) {
+        // Report "how many slots are currently installed" so callers
+        // that parse the return value (the bench runner does) see a
+        // stable number across requests.
+        return Ok(ORIGINALS.lock().map(|o| o.len() as i64).unwrap_or(0));
+    }
+
+    // First call: eval the shim PHP once and swap the function table.
+    // The `php_function_exists` guard is kept because an earlier
+    // `patina_deactivate()` call clears ACTIVATED but leaves the shim
+    // user functions defined in the worker's function table — we don't
+    // want to re-eval and trip "Cannot redeclare function" on the
+    // re-activation path.
     if !php_function_exists("__patina_wp_kses_shim__") {
         if let Err(e) = ext_php_rs::php_eval::execute(PATINA_SHIMS_PHP) {
             return Err(PhpException::default(format!(
@@ -139,7 +178,19 @@ pub fn patina_activate(skip_list: Option<&Zval>) -> PhpResult<i64> {
         }
     }
 
+    ACTIVATED.store(true, Ordering::Relaxed);
     Ok(count)
+}
+
+/// Returns true if `patina_activate()` has already installed its shim
+/// set in this FPM worker process. Used by `php/bridge/patina-bridge.php`
+/// to short-circuit the whole activation path on every request after
+/// the first one — a single cheap PHP→Rust boundary call that returns
+/// an atomic load, vs the full skip-list build + `patina_activate()`
+/// invocation that runs on the first request.
+#[php_function]
+pub fn patina_is_activated() -> bool {
+    ACTIVATED.load(Ordering::Relaxed)
 }
 
 /// Check whether a PHP function exists in the current function table.
@@ -178,6 +229,8 @@ pub fn patina_deactivate() -> PhpResult<i64> {
         }
     }
 
+    // Allow a subsequent `patina_activate()` to re-install the swaps.
+    ACTIVATED.store(false, Ordering::Relaxed);
     Ok(count)
 }
 
@@ -285,43 +338,26 @@ pub fn patina_esc_attr(text: &Zval) -> PhpResult<String> {
 
 // These are the Rust internal functions that the PHP shims in
 // `PATINA_SHIMS_PHP` forward to. The shim casts `$text` to string before
-// calling here, so the Rust side can stay strictly typed.
+// calling here, so the Rust side can stay strictly typed. The shim is
+// also where `apply_filters('esc_html' | 'esc_attr', ...)` fires — see
+// `PATINA_SHIMS_PHP` above for rationale. These internals therefore
+// hold only the sanitization step and do not cross the Rust→PHP
+// boundary at all.
 
 /// esc_html internal. Called from `__patina_esc_html_shim__`.
-///
-/// Applies `apply_filters('esc_html', $result, $text)` to match WordPress
-/// behavior.
 #[php_function]
 pub fn patina_esc_html_internal(text: &str) -> PhpResult<String> {
-    let safe_text = panic_guard::guarded("esc_html", || {
+    panic_guard::guarded("esc_html", || {
         patina_core::escaping::esc_html(text).into_owned()
-    })?;
-
-    let mut func = Zval::new();
-    func.set_string("apply_filters", false)
-        .map_err(|e| PhpException::default(format!("patina: apply_filters setup: {e}")))?;
-
-    match call_user_func!(func, "esc_html", safe_text.as_str(), text) {
-        Ok(result) => Ok(result.string().unwrap_or(safe_text)),
-        Err(_) => Ok(safe_text),
-    }
+    })
 }
 
 /// esc_attr internal. Called from `__patina_esc_attr_shim__`.
 #[php_function]
 pub fn patina_esc_attr_internal(text: &str) -> PhpResult<String> {
-    let safe_text = panic_guard::guarded("esc_attr", || {
+    panic_guard::guarded("esc_attr", || {
         patina_core::escaping::esc_attr(text).into_owned()
-    })?;
-
-    let mut func = Zval::new();
-    func.set_string("apply_filters", false)
-        .map_err(|e| PhpException::default(format!("patina: apply_filters setup: {e}")))?;
-
-    match call_user_func!(func, "esc_attr", safe_text.as_str(), text) {
-        Ok(result) => Ok(result.string().unwrap_or(safe_text)),
-        Err(_) => Ok(safe_text),
-    }
+    })
 }
 
 // ============================================================================
@@ -540,6 +576,7 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         .function(wrap_function!(patina_version))
         .function(wrap_function!(patina_loaded))
         .function(wrap_function!(patina_activate))
+        .function(wrap_function!(patina_is_activated))
         .function(wrap_function!(patina_deactivate))
         .function(wrap_function!(patina_status))
         // escaping (raw — no filters, for benchmarks / direct use)

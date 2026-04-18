@@ -18,6 +18,22 @@ if (getenv('PATINA_DISABLE') || (defined('PATINA_DISABLE') && PATINA_DISABLE)) {
 }
 
 /**
+ * Activation cache: after the first request in this FPM worker the Rust
+ * side already holds the function-table swaps installed and the whole
+ * skip-list construction below is dead work. A single PHP→Rust call to
+ * `patina_is_activated()` reads a Rust-side AtomicBool and returns —
+ * cheap enough to pay on every request, expensive enough to recover on
+ * requests 2..N.
+ *
+ * `function_exists` guard keeps the bridge working with older builds of
+ * the extension that predate `patina_is_activated`; on those it falls
+ * through to the unconditional activation path below.
+ */
+if (function_exists('patina_is_activated') && patina_is_activated()) {
+    return;
+}
+
+/**
  * Per-override toggles (Phase 3 of docs/BENCHMARK_PLAN.md).
  *
  * Each flag below maps to one or more Zend function-table swaps that

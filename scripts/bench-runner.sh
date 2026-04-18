@@ -18,8 +18,15 @@
 # clean "full patina" state for interactive use afterwards.
 #
 # Env overrides:
-#   ITERATIONS=100    samples per scenario per config (default 100)
-#   WARMUP=5          k6 warmup iterations, dropped from metrics
+#   ITERATIONS=100    measured samples per scenario per config (default 100)
+#   CHUNKS=5          split ITERATIONS into this many interleaved chunks,
+#                     cycling configs per chunk so stock and candidate share
+#                     the same time slices. Set CHUNKS=1 for the legacy
+#                     batched-per-config layout.
+#   WARMUP=3          k6 warmup iterations per chunk, dropped from metrics.
+#                     Paid once per chunk to reheat opcache after restart.
+#   CPUSET=2,3        docker cpuset pinned onto php-fpm for the duration of
+#                     the run. Empty string disables pinning.
 #   CONFIGS="..."     comma-separated config names to run (default: all 5)
 #   RUN_DIR=...       output directory (default: /tmp/patina-bench/<ts>)
 #   PROFILE=1         capture one SPX profile per scenario per config
@@ -31,7 +38,9 @@ PROF="docker compose -f ${REPO_DIR}/profiling/docker-compose.yml"
 DEV="docker compose -f ${REPO_DIR}/docker/docker-compose.dev.yml run --rm dev"
 
 ITERATIONS="${ITERATIONS:-100}"
-WARMUP="${WARMUP:-5}"
+CHUNKS="${CHUNKS:-5}"
+WARMUP="${WARMUP:-3}"
+CPUSET="${CPUSET-2,3}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="${RUN_DIR:-/tmp/patina-bench/${TIMESTAMP}}"
 CONFIGS_LIST="${CONFIGS:-stock,esc_only,kses_only,parse_blocks_only,full_patina}"
@@ -39,12 +48,39 @@ PROFILE="${PROFILE:-0}"
 # SPX's HTTP key must match spx.http_key in profiling/conf/spx.ini.
 SPX_HTTP_KEY="dev"
 
+if [ "${CHUNKS}" -lt 1 ]; then
+    echo "error: CHUNKS must be >= 1" >&2
+    exit 2
+fi
+CHUNK_ITERS=$(( ITERATIONS / CHUNKS ))
+if [ "$CHUNK_ITERS" -lt 1 ]; then
+    echo "error: ITERATIONS (${ITERATIONS}) must be >= CHUNKS (${CHUNKS})" >&2
+    exit 2
+fi
+# Round ITERATIONS up to a multiple of CHUNKS so per-chunk sizes are equal
+# and paired stats in bench-compare can assume matching indices per chunk.
+ITERATIONS=$(( CHUNK_ITERS * CHUNKS ))
+
 mkdir -p "${RUN_DIR}"
 echo "=== Patina bench-runner ==="
 echo "  run dir:    ${RUN_DIR}"
-echo "  iterations: ${ITERATIONS} (+ ${WARMUP} warmup, dropped)"
+echo "  iterations: ${ITERATIONS} measured (${CHUNK_ITERS}/chunk × ${CHUNKS} chunks, + ${WARMUP} warmup/chunk)"
 echo "  configs:    ${CONFIGS_LIST}"
+echo "  cpuset:     ${CPUSET:-(unpinned)}"
 echo "  profiling:  $([ "${PROFILE}" = "1" ] && echo "SPX enabled (1 profile/scenario/config)" || echo "off")"
+
+# Noise sanity check — cpufreq turbo boost is the single biggest source of
+# per-sample jitter on a Ryzen. Don't fail the run, just warn; the user may
+# be running the bench on a laptop or shared box where toggling boost is
+# impractical.
+if [ -r /sys/devices/system/cpu/cpufreq/boost ]; then
+    if [ "$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)" = "1" ]; then
+        echo ""
+        echo "  WARN: /sys/devices/system/cpu/cpufreq/boost = 1"
+        echo "        cpufreq boost adds ~5–10% sample jitter. To disable:"
+        echo "            echo 0 | sudo tee /sys/devices/system/cpu/cpufreq/boost"
+    fi
+fi
 echo ""
 
 # ------------------------------------------------------------------
@@ -91,6 +127,29 @@ docker run --rm patina-build-8.3 cat /src/target/release/libpatina.so \
 echo "=== Ensuring profiling stack is up ==="
 $PROF up -d
 
+# Pin php-fpm to a fixed cpuset. With vus=1 in k6 we're measuring a single
+# PHP worker at a time; pinning it away from noisy cores (kworker threads,
+# kernel interrupts on core 0, the k6 process, etc.) noticeably lowers
+# sample stddev on desktop-class hardware. Save the pre-bench value and
+# restore it on exit so interactive use after the run isn't affected.
+PHP_FPM_CID="$($PROF ps -q php-fpm | head -n1)"
+ORIG_CPUSET=""
+if [ -n "${PHP_FPM_CID}" ] && [ -n "${CPUSET}" ]; then
+    ORIG_CPUSET="$(docker inspect --format '{{.HostConfig.CpusetCpus}}' "${PHP_FPM_CID}" 2>/dev/null || echo '')"
+    if docker update --cpuset-cpus "${CPUSET}" "${PHP_FPM_CID}" > /dev/null 2>&1; then
+        echo "  pinned php-fpm (${PHP_FPM_CID:0:12}) to cpuset ${CPUSET} (was '${ORIG_CPUSET}')"
+    else
+        echo "  WARN: failed to pin cpuset on php-fpm; continuing unpinned"
+        ORIG_CPUSET=""
+    fi
+fi
+restore_cpuset() {
+    if [ -n "${PHP_FPM_CID}" ] && [ -n "${CPUSET}" ]; then
+        docker update --cpuset-cpus "${ORIG_CPUSET}" "${PHP_FPM_CID}" > /dev/null 2>&1 || true
+    fi
+}
+trap 'restore_cpuset' EXIT
+
 EXT_DIR="$($PROF exec -T php-fpm php -r 'echo ini_get("extension_dir");')"
 $PROF cp /tmp/patina-8.3.so "php-fpm:${EXT_DIR}/patina.so"
 $PROF exec -T php-fpm bash -c \
@@ -116,7 +175,10 @@ cat > "${RUN_DIR}/manifest.json" <<EOF
   "host": "${HOST_NAME}",
   "cpu": "${CPU_NAME}",
   "iterations_per_scenario": ${ITERATIONS},
-  "warmup_per_scenario": ${WARMUP},
+  "chunks": ${CHUNKS},
+  "chunk_iters": ${CHUNK_ITERS},
+  "warmup_per_chunk": ${WARMUP},
+  "cpuset": "${CPUSET}",
   "configs_run": "${CONFIGS_LIST}"
 }
 EOF
@@ -151,68 +213,92 @@ warm_cache() {
 }
 
 IFS=',' read -ra CONFIGS <<< "${CONFIGS_LIST}"
+
+# Validate every config up-front so we don't discover a typo on chunk 3.
+for config in "${CONFIGS[@]}"; do
+    if [ "$(config_flags "$config")" = "UNKNOWN" ]; then
+        echo "error: unknown config '${config}'" >&2
+        exit 2
+    fi
+    mkdir -p "${RUN_DIR}/${config}"
+    if [ "${PROFILE}" = "1" ]; then
+        mkdir -p "${RUN_DIR}/${config}/spx"
+    fi
+done
+
+# Chunked interleaving: for every chunk we cycle through the full config
+# list, running CHUNK_ITERS measured samples per scenario per config. This
+# keeps stock and each candidate on the same minute-scale time slice, which
+# is what makes the paired-sample analysis in bench-compare actually work
+# — any thermal/host drift between chunks is shared by every config and
+# cancels out of the delta. Legacy behavior (all-stock-then-all-candidate)
+# is CHUNKS=1.
+for (( chunk=1; chunk<=CHUNKS; chunk++ )); do
+    echo ""
+    echo "=== chunk ${chunk}/${CHUNKS} ==="
+    for config in "${CONFIGS[@]}"; do
+        flags="$(config_flags "$config")"
+        active="$(config_active_overrides "$config")"
+        echo "  -- config: ${config}  (flags: ${flags:-none})"
+
+        write_bench_mu_plugin "$flags"
+        $PROF restart php-fpm > /dev/null
+        sleep 1
+        warm_cache
+
+        CONFIG_DIR="${RUN_DIR}/${config}"
+
+        # Clear any stale SPX profiles before the first chunk so the per-
+        # scenario profiles in $CONFIG_DIR/spx/ only reflect this run. Only
+        # chunk 1 profiles are captured — SPX adds ~10% overhead and we
+        # want the rest of the samples clean.
+        if [ "${PROFILE}" = "1" ] && [ "${chunk}" = "1" ]; then
+            $PROF exec -T php-fpm bash -c 'rm -rf /tmp/spx && mkdir -p /tmp/spx && chmod 777 /tmp/spx'
+        fi
+
+        K6_ENV=(-e BASE_URL=http://nginx -e "ITERATIONS=${CHUNK_ITERS}" -e "WARMUP=${WARMUP}")
+        if [ "${PROFILE}" = "1" ] && [ "${chunk}" = "1" ]; then
+            K6_ENV+=(-e "SPX_KEY=${SPX_HTTP_KEY}")
+        fi
+
+        $PROF exec -T \
+            "${K6_ENV[@]}" \
+            php-fpm k6 run \
+                --quiet \
+                --out json=/tmp/k6-output.json \
+                /app/profiling/k6-workloads.js
+        printf -v chunk_file "%s/k6-chunk-%02d.json" "${CONFIG_DIR}" "${chunk}"
+        $PROF exec -T php-fpm cat /tmp/k6-output.json > "${chunk_file}"
+
+        if [ "${PROFILE}" = "1" ] && [ "${chunk}" = "1" ]; then
+            $PROF exec -T php-fpm bash -c '\
+                if [ -d /tmp/spx ] && [ -n "$(ls -A /tmp/spx 2>/dev/null)" ]; then \
+                    tar -C /tmp/spx -cf - . ; \
+                fi' | tar -C "${CONFIG_DIR}/spx" -xf - 2>/dev/null || true
+            profile_count=$(find "${CONFIG_DIR}/spx" -mindepth 1 -maxdepth 2 -type f 2>/dev/null | wc -l | tr -d ' ')
+            echo "     spx: captured ${profile_count} profile file(s)"
+        fi
+    done
+done
+
+echo ""
+echo "=== aggregating ==="
 for config in "${CONFIGS[@]}"; do
     flags="$(config_flags "$config")"
-    if [ "$flags" = "UNKNOWN" ]; then
-        echo "!! unknown config '${config}' — skipping"
-        continue
-    fi
     active="$(config_active_overrides "$config")"
-
-    echo ""
-    echo "=== config: ${config} ==="
-    [ -n "$flags" ] && echo "  flags: ${flags}" || echo "  flags: (none — full patina)"
-    echo "  active: ${active:-(none)}"
-
-    write_bench_mu_plugin "$flags"
-    $PROF restart php-fpm > /dev/null
-    sleep 2
-    warm_cache
-
     CONFIG_DIR="${RUN_DIR}/${config}"
-    mkdir -p "${CONFIG_DIR}"
 
-    # Clear any stale SPX profiles before this config runs so we only
-    # collect the ones produced during the k6 invocation below. SPX writes
-    # its profiles under /tmp/spx inside the php-fpm container.
-    if [ "${PROFILE}" = "1" ]; then
-        $PROF exec -T php-fpm bash -c 'rm -rf /tmp/spx && mkdir -p /tmp/spx'
-    fi
-
-    K6_ENV=(-e BASE_URL=http://nginx -e "ITERATIONS=${ITERATIONS}" -e "WARMUP=${WARMUP}")
-    if [ "${PROFILE}" = "1" ]; then
-        K6_ENV+=(-e "SPX_KEY=${SPX_HTTP_KEY}")
-    fi
-
-    $PROF exec -T \
-        "${K6_ENV[@]}" \
-        php-fpm k6 run \
-            --quiet \
-            --out json=/tmp/k6-output.json \
-            /app/profiling/k6-workloads.js
-    $PROF exec -T php-fpm cat /tmp/k6-output.json > "${CONFIG_DIR}/k6-output.json"
-
-    # Pull SPX profiles out of the container if profiling was enabled.
-    # SPX writes one directory per profile under /tmp/spx (name includes
-    # a timestamp and the SPX_REPORT_KEY we set from the k6 cookie).
-    if [ "${PROFILE}" = "1" ]; then
-        mkdir -p "${CONFIG_DIR}/spx"
-        $PROF exec -T php-fpm bash -c '\
-            if [ -d /tmp/spx ] && [ -n "$(ls -A /tmp/spx 2>/dev/null)" ]; then \
-                tar -C /tmp/spx -cf - . ; \
-            fi' | tar -C "${CONFIG_DIR}/spx" -xf - 2>/dev/null || true
-        profile_count=$(find "${CONFIG_DIR}/spx" -mindepth 1 -maxdepth 2 -type f 2>/dev/null | wc -l | tr -d ' ')
-        echo "  spx: captured ${profile_count} profile file(s) → ${CONFIG_DIR}/spx/"
-    fi
-
-    # Build env map JSON the aggregator records in the summary.
     env_json="{}"
     if [ -n "$flags" ]; then
         env_json=$(python3 -c "import json,sys; print(json.dumps({k:'1' for k in sys.argv[1].split(',')}))" "$flags")
     fi
 
+    # Chunk files are in numerical order on disk, so glob expansion gives
+    # the aggregator sample streams in chunk order. That's essential for
+    # the paired analysis — index i across configs must map to the same
+    # chunk.
     python3 "${REPO_DIR}/scripts/bench-aggregate.py" \
-        --k6-json "${CONFIG_DIR}/k6-output.json" \
+        --k6-json "${CONFIG_DIR}"/k6-chunk-*.json \
         --output "${CONFIG_DIR}/summary.json" \
         --config-name "${config}" \
         --config-env "${env_json}" \
@@ -224,7 +310,8 @@ for config in "${CONFIGS[@]}"; do
         --host "${HOST_NAME}" \
         --cpu "${CPU_NAME}" \
         --timestamp "${TIMESTAMP}" \
-        --iterations "${ITERATIONS}"
+        --iterations "${ITERATIONS}" \
+        --chunks "${CHUNKS}"
 done
 
 # ------------------------------------------------------------------
@@ -233,6 +320,8 @@ done
 # ------------------------------------------------------------------
 remove_bench_mu_plugin
 $PROF restart php-fpm > /dev/null
+restore_cpuset
+trap - EXIT
 
 echo ""
 echo "=== bench-runner complete ==="

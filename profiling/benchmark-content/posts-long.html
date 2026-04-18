@@ -1,111 +1,332 @@
 <!-- wp:heading -->
-<h2 class="wp-block-heading">A long-form block post — the parse_blocks win zone</h2>
+<h2 class="wp-block-heading">A long block post — sixty flat blocks stressing the parser</h2>
 <!-- /wp:heading -->
 
 <!-- wp:paragraph -->
-<p>This fixture targets eight kilobytes of body content with deep block nesting — the scenario where <code>parse_blocks</code> spends real time and therefore where a native Rust replacement should show the biggest absolute win. Eight kilobytes is the upper tail of "normal" blog content: long opinion pieces, tutorial walkthroughs, detailed release notes, conference write-ups. Content above this size is rare enough in practice that optimizing it further has diminishing real-world impact.</p>
-<!-- /wp:paragraph -->
-
-<!-- wp:heading {"level":3} -->
-<h3 class="wp-block-heading">Section one — nesting for days</h3>
-<!-- /wp:heading -->
-
-<!-- wp:group -->
-<div class="wp-block-group">
-<!-- wp:paragraph --><p>This whole section is wrapped in a <code>core/group</code>. Groups are the most common nesting block in modern WP themes — they're how FSE patterns compose, how cover blocks contain their children, and how full-site templates wrap entry content. If the Rust parser is slow on groups, it's slow on everything.</p><!-- /wp:paragraph -->
-
-<!-- wp:columns -->
-<div class="wp-block-columns">
-<!-- wp:column -->
-<div class="wp-block-column">
-<!-- wp:heading {"level":4} --><h4 class="wp-block-heading">Left rail</h4><!-- /wp:heading -->
-<!-- wp:paragraph --><p>Column one is the left rail. In a realistic theme this would hold a table of contents, or maybe a sticky author card. We use it to hold more text because the goal is byte-count pressure, not design fidelity.</p><!-- /wp:paragraph -->
-<!-- wp:list --><ul><li>List item one — deeply nested inside column one inside a columns block inside a group</li><li>List item two with a <a href="https://example.com/nested">nested link</a></li><li>List item three with <code>inline code</code> and <strong>bold</strong></li></ul><!-- /wp:list -->
-</div>
-<!-- /wp:column -->
-
-<!-- wp:column -->
-<div class="wp-block-column">
-<!-- wp:heading {"level":4} --><h4 class="wp-block-heading">Right rail</h4><!-- /wp:heading -->
-<!-- wp:paragraph --><p>Column two is the right rail. Four levels deep: group → columns → column → paragraph. This is the nesting depth the real-world corpus hits most often — deeper than this and you're in patterns/templates, not post content.</p><!-- /wp:paragraph -->
-<!-- wp:quote --><blockquote class="wp-block-quote"><p>"Depth matters more than count. A flat list of 100 paragraphs is easier to parse than 10 paragraphs wrapped in 5 layers of groups."</p></blockquote><!-- /wp:quote -->
-</div>
-<!-- /wp:column -->
-</div>
-<!-- /wp:columns -->
-</div>
-<!-- /wp:group -->
-
-<!-- wp:heading {"level":3} -->
-<h3 class="wp-block-heading">Section two — block variety</h3>
-<!-- /wp:heading -->
-
-<!-- wp:paragraph -->
-<p>The block grammar has roughly a dozen core blocks that appear in nearly every post. Below we cycle through them so the Rust parser exercises every branch of the top-level dispatch: paragraph, heading, list, quote, code, preformatted, table, separator, spacer, image caption, group, columns. The pattern repeats because block frequency is heavily zipfian — paragraphs dominate by a factor of ten, lists and headings are the next tier, and everything else is a long tail.</p>
+<p>WordPress block content usually arrives at <code>parse_blocks</code> as a flat sequence of top-level blocks separated by HTML comment delimiters. The parser walks the string once, emits a node per delimiter pair, and recurses only when it sees an opening marker without a matching close on the same nesting level. Flat content is the overwhelmingly common shape in practice — most posts are paragraph-heavy with the occasional heading, list, and quote, and very little structural nesting outside of templates and patterns.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
-<p>Another paragraph. Patina's shim layer adds one PHP frame per call, which shows up as ~500 nanoseconds of overhead per <code>parse_blocks</code> invocation — effectively free next to the multi-millisecond body of the function itself. The worry isn't shim overhead on this path; the worry is whether the Rust parser matches WP's exact output shape including innerContent placeholders.</p>
+<p>The shim layer Patina uses to intercept core functions adds roughly five hundred nanoseconds of overhead per call. That figure is noise next to the multi-millisecond body of <code>wp_kses</code> or <code>parse_blocks</code>, but it becomes observable if the override is called tens of thousands of times per request. The mitigation, when it matters, is to push the hot loop down into Rust so the shim boundary is crossed once per block tree rather than once per block.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Escaping is surprisingly expensive in aggregate. <code>esc_html</code> and <code>esc_attr</code> are each called hundreds of times during a typical page render — every template tag, every attribute on every link, every translated string that might contain user data. Individually they're cheap, but cumulatively the PHP version spends a measurable slice of wall-clock time in <code>htmlspecialchars</code> and its <em>zend_string</em> allocation bookkeeping.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section 1: more ground to cover</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>Comment-heavy pages are where <code>wp_kses</code> earns its cost. Every approved comment body is run through the allowed-tag filter at render time, and the allowed-tag set for comments is large enough that the PHP implementation walks a non-trivial state machine across each comment. A post with fifty comments renders kses fifty times, and the cost scales linearly with both comment count and average comment length.</p>
 <!-- /wp:paragraph -->
 
 <!-- wp:list -->
 <ul>
-<li>Paragraphs are the most common block</li>
-<li>Lists are the second most common</li>
-<li>Headings are the third</li>
-<li>Everything else is a long tail of occasional use</li>
-<li>Groups and columns dominate the <em>nesting</em> distribution</li>
-<li>Cover blocks appear once per post when used at all</li>
-<li>Embeds round out the top ten</li>
+<li>Paragraph blocks dominate the distribution and absorb most of the parser's work</li>
+<li>Heading blocks are cheap individually but accumulate over document structure</li>
+<li>List blocks expand into non-trivial HTML once the allowed-tag filter runs on them</li>
+<li>Quote blocks are uncommon per post but carry heavy inline markup when they appear</li>
+<li>Code blocks skip most of the kses pipeline because <pre><code> is largely pass-through</li>
+<li>Table blocks are rare but exercise the deepest branch in the block grammar</li>
 </ul>
 <!-- /wp:list -->
 
+<!-- wp:paragraph -->
+<p>Tables of contents, glossaries, and reference sheets push posts into the long tail of body size. These posts are rare — under five percent of a typical corpus — but they dominate the p95 latency on pages that render full content. The parser spends proportionally more time on them, which is exactly why they're included in the benchmark corpus: the long tail is where optimizations pay back.</p>
+<!-- /wp:paragraph -->
+
 <!-- wp:quote -->
 <blockquote class="wp-block-quote">
-<p>"If you parse the ninety-fifth percentile post in under a millisecond, you've already won — the remaining five percent are rounding error on the average pageload."</p>
-<cite>— Nobody specific, but it sounds right</cite>
+<p>"If your benchmark doesn't look like production, it's not a benchmark — it's a microbenchmark, and microbenchmarks lie by amortizing away the exact costs you came to measure."</p>
+<cite>— Every performance engineer, eventually</cite>
 </blockquote>
 <!-- /wp:quote -->
+
+<!-- wp:paragraph -->
+<p>Real-world block usage is heavily zipfian. Paragraphs account for roughly seventy percent of all blocks in published WordPress content, headings and lists together for another twenty, and everything else — quotes, code, images, tables, embeds, buttons, spacers, separators — shares the remaining ten. A benchmark corpus that over-represents the tail will measure a parser's dispatch fairness; one that tracks the zipf will measure the thing users actually hit.</p>
+<!-- /wp:paragraph -->
 
 <!-- wp:code -->
 <pre class="wp-block-code"><code>fn parse_blocks(input: &amp;str) -&gt; Vec&lt;Block&gt; {
     // Recursive descent over the block grammar.
-    // Byte-for-byte match with wp-includes/class-wp-block-parser.php.
+    // Byte-for-byte match with class-wp-block-parser.php.
     let mut parser = Parser::new(input);
     let mut out = Vec::new();
     while let Some(block) = parser.next_block() {
         out.push(block);
     }
     out
-}
-</code></pre>
+}</code></pre>
 <!-- /wp:code -->
 
-<!-- wp:preformatted -->
-<pre class="wp-block-preformatted">Preformatted text is the one block that preserves whitespace.
-    Indented line one.
-    Indented line two.
-It's rare in practice but included here for coverage.</pre>
-<!-- /wp:preformatted -->
+<!-- wp:paragraph -->
+<p>The grammar WordPress uses for blocks is recursive descent over HTML comments with a JSON attributes blob on the opening marker. It parses in linear time on well-formed input and degrades to quadratic only on pathological cases involving unclosed blocks — which the editor prevents from ever landing in the database, so in practice the linear branch is the only one worth optimizing.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Inline markup is another hidden cost. A paragraph with a dozen inline tags — bold, italic, code, links, spans — generates that many additional nodes in the DOM the kses walker has to validate. The test fixtures below deliberately sprinkle inline markup into each paragraph so the render-time sanitizer does non-trivial work on every block, rather than short-circuiting on a plain string of prose.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Entities and character references exercise a different code path in the escaper than raw ASCII does. Ampersands, less-than signs, quotes inside attribute values, and the occasional Unicode emoji all exercise branches that plain text skips. The corpus sprinkles them throughout so the escape benchmarks don't accidentally measure the fast path exclusively and overstate the real-world win.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section 2: more ground to cover</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>Full-site-editing templates wrap post content in a stack of group, columns, and query blocks before the inner HTML ever reaches the render loop. The template overhead is constant per request — it doesn't scale with post size — so its cost amortizes across anything that saves time inside the post body. That amortization is why the long fixture below matters most: the savings on one big post dwarf the template-wrapper overhead.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul>
+<li>Code blocks skip most of the kses pipeline because <pre><code> is largely pass-through</li>
+<li>Table blocks are rare but exercise the deepest branch in the block grammar</li>
+<li>Separator blocks are pure structure and parse in constant time</li>
+<li>Group blocks are the primary nesting container in modern themes</li>
+<li>Columns blocks always contain two or more column children and double the descent depth</li>
+<li>Image blocks carry alt text through kses on every render</li>
+</ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>Cache behavior dominates microbenchmark variance. The same request served from a warm opcache with a warm MySQL query cache and a warm filesystem cache can be twice as fast as the same request on a cold start. The bench runner deliberately warms all three before starting the measurement window, so the numbers reflect steady-state rendering rather than cold-start noise.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:quote -->
+<blockquote class="wp-block-quote">
+<p>"Depth matters more than count. A flat list of a hundred paragraphs is easier to parse than ten paragraphs wrapped in five layers of groups."</p>
+<cite>— Folk wisdom from the block editor team</cite>
+</blockquote>
+<!-- /wp:quote -->
+
+<!-- wp:paragraph -->
+<p>The practical ceiling on parse_blocks performance is the time WordPress spends in the database and template layer. Even if the parser took zero nanoseconds, the request floor is bounded by MySQL round trips, PHP opcode execution, and template rendering. The Rust wins show up as tail-latency improvements on content-heavy pages, not as median improvements on the homepage.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:table -->
+<figure class="wp-block-table"><table><thead><tr><th>Scenario</th><th>Dominant cost</th><th>Rust delta</th></tr></thead><tbody>
+<tr><td>Homepage (latest N)</td><td>parse_blocks × N</td><td>moderate at p95</td></tr>
+<tr><td>Single long post</td><td>parse_blocks × 1</td><td>high at p95</td></tr>
+<tr><td>Archive pages</td><td>parse_blocks × N + kses</td><td>moderate at p95</td></tr>
+<tr><td>Comment-heavy post</td><td>wp_kses × comments</td><td>high at p95</td></tr>
+<tr><td>Search results</td><td>parse_blocks × N (excerpts)</td><td>low</td></tr>
+<tr><td>REST /wp/v2/posts</td><td>parse_blocks × N</td><td>high at p99</td></tr>
+</tbody></table></figure>
+<!-- /wp:table -->
+
+<!-- wp:paragraph -->
+<p>Good benchmarks look like production. That means realistic post shapes, realistic comment densities, realistic template complexity, and realistic query patterns. A corpus of one thousand identical posts generated from a loop will measure a cache, not a renderer. The fixtures in this directory aim for variety within each tier — different block types, different inline density, different content shapes — so the parser exercises all its branches.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Regressions hide in the places you don't measure. Adding a new override without a filter-compatibility integration test is how a seemingly-equivalent Rust implementation ends up silently diverging from WordPress output on some obscure wp-admin screen. Every shimmed override in this project ships with an integration test that calls it through real WordPress hooks, not a unit test that bypasses them.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>The measurement goal is tail latency, not median. Median request time on a warm WordPress install is dominated by fixed costs — MySQL, template boot, plugin init — that Patina does not touch. The interesting deltas are at the p95 and p99 of content-heavy scenarios, where the Rust overrides save enough wall-clock time to move the tail while leaving the median unmoved.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section 3: more ground to cover</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>WordPress block content usually arrives at <code>parse_blocks</code> as a flat sequence of top-level blocks separated by HTML comment delimiters. The parser walks the string once, emits a node per delimiter pair, and recurses only when it sees an opening marker without a matching close on the same nesting level. Flat content is the overwhelmingly common shape in practice — most posts are paragraph-heavy with the occasional heading, list, and quote, and very little structural nesting outside of templates and patterns.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul>
+<li>Columns blocks always contain two or more column children and double the descent depth</li>
+<li>Image blocks carry alt text through kses on every render</li>
+<li>Embed blocks short-circuit the parser and defer to the oembed cache</li>
+<li>Buttons blocks look flat but wrap each button in a container for flex layout</li>
+<li>Cover blocks nest deeply when the editor user has added inline children</li>
+<li>Spacer blocks are the simplest block in the grammar and parse in nanoseconds</li>
+</ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>The shim layer Patina uses to intercept core functions adds roughly five hundred nanoseconds of overhead per call. That figure is noise next to the multi-millisecond body of <code>wp_kses</code> or <code>parse_blocks</code>, but it becomes observable if the override is called tens of thousands of times per request. The mitigation, when it matters, is to push the hot loop down into Rust so the shim boundary is crossed once per block tree rather than once per block.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:quote -->
+<blockquote class="wp-block-quote">
+<p>"Measure the ninety-fifth percentile, because the median is already fast and the ninety-ninth is already an outlier. The ninety-fifth is where the wins live."</p>
+<cite>— An observability engineer, probably</cite>
+</blockquote>
+<!-- /wp:quote -->
+
+<!-- wp:paragraph -->
+<p>Escaping is surprisingly expensive in aggregate. <code>esc_html</code> and <code>esc_attr</code> are each called hundreds of times during a typical page render — every template tag, every attribute on every link, every translated string that might contain user data. Individually they're cheap, but cumulatively the PHP version spends a measurable slice of wall-clock time in <code>htmlspecialchars</code> and its <em>zend_string</em> allocation bookkeeping.</p>
+<!-- /wp:paragraph -->
 
 <!-- wp:separator -->
 <hr class="wp-block-separator has-alpha-channel-opacity"/>
 <!-- /wp:separator -->
 
-<!-- wp:heading {"level":3} -->
-<h3 class="wp-block-heading">Section three — tables and closing</h3>
-<!-- /wp:heading -->
-
-<!-- wp:table -->
-<figure class="wp-block-table"><table><thead><tr><th>Scenario</th><th>Target block</th><th>Expected delta</th></tr></thead><tbody>
-<tr><td>Homepage (latest 10)</td><td>parse_blocks x10</td><td>moderate</td></tr>
-<tr><td>Long single post</td><td>parse_blocks x1</td><td>high</td></tr>
-<tr><td>Archive page</td><td>parse_blocks xN</td><td>moderate</td></tr>
-<tr><td>Search results</td><td>parse_blocks xN (excerpts)</td><td>low</td></tr>
-<tr><td>REST API /wp/v2/posts</td><td>parse_blocks xN</td><td>high</td></tr>
-</tbody></table></figure>
-<!-- /wp:table -->
+<!-- wp:paragraph -->
+<p>Comment-heavy pages are where <code>wp_kses</code> earns its cost. Every approved comment body is run through the allowed-tag filter at render time, and the allowed-tag set for comments is large enough that the PHP implementation walks a non-trivial state machine across each comment. A post with fifty comments renders kses fifty times, and the cost scales linearly with both comment count and average comment length.</p>
+<!-- /wp:paragraph -->
 
 <!-- wp:paragraph -->
-<p>Closing paragraph: the long fixture is deliberately closer to the upper tail of body sizes than a typical post, because it's the scenario where <strong>parse_blocks</strong> spends enough absolute time for a speedup to dominate the per-request overhead of the extension's activation path. Measuring the win zone matters more than measuring the median.</p>
+<p>Tables of contents, glossaries, and reference sheets push posts into the long tail of body size. These posts are rare — under five percent of a typical corpus — but they dominate the p95 latency on pages that render full content. The parser spends proportionally more time on them, which is exactly why they're included in the benchmark corpus: the long tail is where optimizations pay back.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Real-world block usage is heavily zipfian. Paragraphs account for roughly seventy percent of all blocks in published WordPress content, headings and lists together for another twenty, and everything else — quotes, code, images, tables, embeds, buttons, spacers, separators — shares the remaining ten. A benchmark corpus that over-represents the tail will measure a parser's dispatch fairness; one that tracks the zipf will measure the thing users actually hit.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section 4: more ground to cover</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>The grammar WordPress uses for blocks is recursive descent over HTML comments with a JSON attributes blob on the opening marker. It parses in linear time on well-formed input and degrades to quadratic only on pathological cases involving unclosed blocks — which the editor prevents from ever landing in the database, so in practice the linear branch is the only one worth optimizing.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul>
+<li>Cover blocks nest deeply when the editor user has added inline children</li>
+<li>Spacer blocks are the simplest block in the grammar and parse in nanoseconds</li>
+<li>Pullquote blocks render similarly to quotes with extra styling attributes</li>
+<li>Paragraph blocks dominate the distribution and absorb most of the parser's work</li>
+<li>Heading blocks are cheap individually but accumulate over document structure</li>
+<li>List blocks expand into non-trivial HTML once the allowed-tag filter runs on them</li>
+</ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>Inline markup is another hidden cost. A paragraph with a dozen inline tags — bold, italic, code, links, spans — generates that many additional nodes in the DOM the kses walker has to validate. The test fixtures below deliberately sprinkle inline markup into each paragraph so the render-time sanitizer does non-trivial work on every block, rather than short-circuiting on a plain string of prose.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:quote -->
+<blockquote class="wp-block-quote">
+<p>"The fastest code is the code that never runs — but the second-fastest code is the code that runs in Rust."</p>
+<cite>— Attributed, dubiously</cite>
+</blockquote>
+<!-- /wp:quote -->
+
+<!-- wp:paragraph -->
+<p>Entities and character references exercise a different code path in the escaper than raw ASCII does. Ampersands, less-than signs, quotes inside attribute values, and the occasional Unicode emoji all exercise branches that plain text skips. The corpus sprinkles them throughout so the escape benchmarks don't accidentally measure the fast path exclusively and overstate the real-world win.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:preformatted -->
+<pre class="wp-block-preformatted">Preformatted text preserves whitespace exactly.
+    Indented line one — leading spaces survive the render.
+    Indented line two — tabs and spaces both pass through.
+A rare block in practice but included for coverage of the
+render path that skips most of the kses walk.</pre>
+<!-- /wp:preformatted -->
+
+<!-- wp:paragraph -->
+<p>Full-site-editing templates wrap post content in a stack of group, columns, and query blocks before the inner HTML ever reaches the render loop. The template overhead is constant per request — it doesn't scale with post size — so its cost amortizes across anything that saves time inside the post body. That amortization is why the long fixture below matters most: the savings on one big post dwarf the template-wrapper overhead.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Cache behavior dominates microbenchmark variance. The same request served from a warm opcache with a warm MySQL query cache and a warm filesystem cache can be twice as fast as the same request on a cold start. The bench runner deliberately warms all three before starting the measurement window, so the numbers reflect steady-state rendering rather than cold-start noise.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>The practical ceiling on parse_blocks performance is the time WordPress spends in the database and template layer. Even if the parser took zero nanoseconds, the request floor is bounded by MySQL round trips, PHP opcode execution, and template rendering. The Rust wins show up as tail-latency improvements on content-heavy pages, not as median improvements on the homepage.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section 5: more ground to cover</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>Good benchmarks look like production. That means realistic post shapes, realistic comment densities, realistic template complexity, and realistic query patterns. A corpus of one thousand identical posts generated from a loop will measure a cache, not a renderer. The fixtures in this directory aim for variety within each tier — different block types, different inline density, different content shapes — so the parser exercises all its branches.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul>
+<li>Heading blocks are cheap individually but accumulate over document structure</li>
+<li>List blocks expand into non-trivial HTML once the allowed-tag filter runs on them</li>
+<li>Quote blocks are uncommon per post but carry heavy inline markup when they appear</li>
+<li>Code blocks skip most of the kses pipeline because <pre><code> is largely pass-through</li>
+<li>Table blocks are rare but exercise the deepest branch in the block grammar</li>
+<li>Separator blocks are pure structure and parse in constant time</li>
+</ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>Regressions hide in the places you don't measure. Adding a new override without a filter-compatibility integration test is how a seemingly-equivalent Rust implementation ends up silently diverging from WordPress output on some obscure wp-admin screen. Every shimmed override in this project ships with an integration test that calls it through real WordPress hooks, not a unit test that bypasses them.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:quote -->
+<blockquote class="wp-block-quote">
+<p>"If your benchmark doesn't look like production, it's not a benchmark — it's a microbenchmark, and microbenchmarks lie by amortizing away the exact costs you came to measure."</p>
+<cite>— Every performance engineer, eventually</cite>
+</blockquote>
+<!-- /wp:quote -->
+
+<!-- wp:paragraph -->
+<p>The measurement goal is tail latency, not median. Median request time on a warm WordPress install is dominated by fixed costs — MySQL, template boot, plugin init — that Patina does not touch. The interesting deltas are at the p95 and p99 of content-heavy scenarios, where the Rust overrides save enough wall-clock time to move the tail while leaving the median unmoved.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:code -->
+<pre class="wp-block-code"><code>pub fn esc_html(s: &amp;str) -&gt; String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&amp;' =&gt; out.push_str("&amp;amp;"),
+            '&lt;' =&gt; out.push_str("&amp;lt;"),
+            '&gt;' =&gt; out.push_str("&amp;gt;"),
+            '"' =&gt; out.push_str("&amp;quot;"),
+            '\''=&gt; out.push_str("&amp;#039;"),
+            _   =&gt; out.push(c),
+        }
+    }
+    out
+}</code></pre>
+<!-- /wp:code -->
+
+<!-- wp:paragraph -->
+<p>WordPress block content usually arrives at <code>parse_blocks</code> as a flat sequence of top-level blocks separated by HTML comment delimiters. The parser walks the string once, emits a node per delimiter pair, and recurses only when it sees an opening marker without a matching close on the same nesting level. Flat content is the overwhelmingly common shape in practice — most posts are paragraph-heavy with the occasional heading, list, and quote, and very little structural nesting outside of templates and patterns.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>The shim layer Patina uses to intercept core functions adds roughly five hundred nanoseconds of overhead per call. That figure is noise next to the multi-millisecond body of <code>wp_kses</code> or <code>parse_blocks</code>, but it becomes observable if the override is called tens of thousands of times per request. The mitigation, when it matters, is to push the hot loop down into Rust so the shim boundary is crossed once per block tree rather than once per block.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:paragraph -->
+<p>Escaping is surprisingly expensive in aggregate. <code>esc_html</code> and <code>esc_attr</code> are each called hundreds of times during a typical page render — every template tag, every attribute on every link, every translated string that might contain user data. Individually they're cheap, but cumulatively the PHP version spends a measurable slice of wall-clock time in <code>htmlspecialchars</code> and its <em>zend_string</em> allocation bookkeeping.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:heading {"level":3} -->
+<h3 class="wp-block-heading">Section 6: more ground to cover</h3>
+<!-- /wp:heading -->
+
+<!-- wp:paragraph -->
+<p>Comment-heavy pages are where <code>wp_kses</code> earns its cost. Every approved comment body is run through the allowed-tag filter at render time, and the allowed-tag set for comments is large enough that the PHP implementation walks a non-trivial state machine across each comment. A post with fifty comments renders kses fifty times, and the cost scales linearly with both comment count and average comment length.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:list -->
+<ul>
+<li>Table blocks are rare but exercise the deepest branch in the block grammar</li>
+<li>Separator blocks are pure structure and parse in constant time</li>
+<li>Group blocks are the primary nesting container in modern themes</li>
+<li>Columns blocks always contain two or more column children and double the descent depth</li>
+<li>Image blocks carry alt text through kses on every render</li>
+<li>Embed blocks short-circuit the parser and defer to the oembed cache</li>
+</ul>
+<!-- /wp:list -->
+
+<!-- wp:paragraph -->
+<p>Tables of contents, glossaries, and reference sheets push posts into the long tail of body size. These posts are rare — under five percent of a typical corpus — but they dominate the p95 latency on pages that render full content. The parser spends proportionally more time on them, which is exactly why they're included in the benchmark corpus: the long tail is where optimizations pay back.</p>
+<!-- /wp:paragraph -->
+
+<!-- wp:quote -->
+<blockquote class="wp-block-quote">
+<p>"Depth matters more than count. A flat list of a hundred paragraphs is easier to parse than ten paragraphs wrapped in five layers of groups."</p>
+<cite>— Folk wisdom from the block editor team</cite>
+</blockquote>
+<!-- /wp:quote -->
+
+<!-- wp:paragraph -->
+<p>The grammar WordPress uses for blocks is recursive descent over HTML comments with a JSON attributes blob on the opening marker. It parses in linear time on well-formed input and degrades to quadratic only on pathological cases involving unclosed blocks — which the editor prevents from ever landing in the database, so in practice the linear branch is the only one worth optimizing.</p>
 <!-- /wp:paragraph -->
