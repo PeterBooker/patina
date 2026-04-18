@@ -94,8 +94,8 @@ bench-http: ## Run HTTP-level bench (k6 against the profiling stack)
 		$(PROF) exec -T php-fpm cat /tmp/k6-output.json > $$RUN_DIR/k6-output.json && \
 		echo "Output: $$RUN_DIR/k6-output.json"
 
-bench-full: ## Run the full per-config bench matrix (stock + 4 patina configs)
-	@CONFIGS=$${CONFIGS:-stock,esc_only,kses_only,parse_blocks_only,full_patina} \
+bench-full: ## Run the full per-config bench matrix (stock + 5 patina configs)
+	@CONFIGS=$${CONFIGS:-stock,esc_only,kses_only,parse_blocks_only,sanitize_title_only,full_patina} \
 		bash scripts/bench-runner.sh
 
 bench-compare: ## Compare one run (intra) or two runs (cross). Usage: make bench-compare RUN=/tmp/... [TO=/tmp/...]

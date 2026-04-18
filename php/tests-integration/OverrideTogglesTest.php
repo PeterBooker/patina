@@ -40,6 +40,7 @@ class OverrideTogglesTest extends IntegrationTestCase
         $this->assertContains('esc_attr', $active);
         $this->assertContains('wp_kses', $active);
         $this->assertContains('parse_blocks', $active);
+        $this->assertContains('sanitize_title_with_dashes', $active);
     }
 
     public function test_skip_esc_disables_only_esc_pair(): void
@@ -76,10 +77,28 @@ class OverrideTogglesTest extends IntegrationTestCase
         $this->assertContains('wp_kses', $active);
     }
 
+    public function test_skip_sanitize_title_keeps_other_overrides(): void
+    {
+        patina_deactivate();
+        patina_activate(['sanitize_title_with_dashes']);
+        $active = patina_status();
+
+        $this->assertNotContains('sanitize_title_with_dashes', $active);
+        $this->assertContains('esc_html', $active);
+        $this->assertContains('wp_kses', $active);
+        $this->assertContains('parse_blocks', $active);
+    }
+
     public function test_skip_all_disables_everything(): void
     {
         patina_deactivate();
-        patina_activate(['esc_html', 'esc_attr', 'wp_kses', 'parse_blocks']);
+        patina_activate([
+            'esc_html',
+            'esc_attr',
+            'wp_kses',
+            'parse_blocks',
+            'sanitize_title_with_dashes',
+        ]);
         $this->assertSame([], patina_status());
     }
 

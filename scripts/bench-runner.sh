@@ -43,7 +43,7 @@ WARMUP="${WARMUP:-3}"
 CPUSET="${CPUSET-2,3}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="${RUN_DIR:-/tmp/patina-bench/${TIMESTAMP}}"
-CONFIGS_LIST="${CONFIGS:-stock,esc_only,kses_only,parse_blocks_only,full_patina}"
+CONFIGS_LIST="${CONFIGS:-stock,esc_only,kses_only,parse_blocks_only,sanitize_title_only,full_patina}"
 PROFILE="${PROFILE:-0}"
 # SPX's HTTP key must match spx.http_key in profiling/conf/spx.ini.
 SPX_HTTP_KEY="dev"
@@ -92,22 +92,24 @@ echo ""
 # ------------------------------------------------------------------
 config_flags() {
     case "$1" in
-        stock)              echo "PATINA_DISABLE" ;;
-        esc_only)           echo "PATINA_DISABLE_KSES,PATINA_DISABLE_PARSE_BLOCKS" ;;
-        kses_only)          echo "PATINA_DISABLE_ESC,PATINA_DISABLE_PARSE_BLOCKS" ;;
-        parse_blocks_only)  echo "PATINA_DISABLE_ESC,PATINA_DISABLE_KSES" ;;
-        full_patina)        echo "" ;;
+        stock)               echo "PATINA_DISABLE" ;;
+        esc_only)            echo "PATINA_DISABLE_KSES,PATINA_DISABLE_PARSE_BLOCKS,PATINA_DISABLE_SANITIZE_TITLE" ;;
+        kses_only)           echo "PATINA_DISABLE_ESC,PATINA_DISABLE_PARSE_BLOCKS,PATINA_DISABLE_SANITIZE_TITLE" ;;
+        parse_blocks_only)   echo "PATINA_DISABLE_ESC,PATINA_DISABLE_KSES,PATINA_DISABLE_SANITIZE_TITLE" ;;
+        sanitize_title_only) echo "PATINA_DISABLE_ESC,PATINA_DISABLE_KSES,PATINA_DISABLE_PARSE_BLOCKS" ;;
+        full_patina)         echo "" ;;
         *) echo "UNKNOWN" ;;
     esac
 }
 
 config_active_overrides() {
     case "$1" in
-        stock)              echo "" ;;
-        esc_only)           echo "esc_html,esc_attr" ;;
-        kses_only)          echo "wp_kses" ;;
-        parse_blocks_only)  echo "parse_blocks" ;;
-        full_patina)        echo "esc_html,esc_attr,wp_kses,parse_blocks" ;;
+        stock)               echo "" ;;
+        esc_only)            echo "esc_html,esc_attr" ;;
+        kses_only)           echo "wp_kses" ;;
+        parse_blocks_only)   echo "parse_blocks" ;;
+        sanitize_title_only) echo "sanitize_title_with_dashes" ;;
+        full_patina)         echo "esc_html,esc_attr,wp_kses,parse_blocks,sanitize_title_with_dashes" ;;
         *) echo "" ;;
     esac
 }
