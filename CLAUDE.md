@@ -35,8 +35,9 @@ make verify            # Load extension, print functions
 make shell             # Dev container shell
 ```
 
-`bench-full` iterates five named configurations (`stock`, `esc_only`,
-`kses_only`, `parse_blocks_only`, `full_patina`) by injecting a
+`bench-full` iterates six named configurations (`stock`, `esc_only`,
+`kses_only`, `parse_blocks_only`, `sanitize_title_only`, `full_patina`)
+by injecting a
 `000-patina-bench-config.php` mu-plugin that defines the relevant
 `PATINA_DISABLE_*` constants before `patina-bridge.php` loads, then
 restarting php-fpm between configs. Per-config summaries + a manifest
@@ -62,6 +63,7 @@ during benchmarking without rebuilding the `.so`:
 | `PATINA_DISABLE_ESC` | `esc_html` + `esc_attr` |
 | `PATINA_DISABLE_KSES` | `wp_kses` and every wrapper |
 | `PATINA_DISABLE_PARSE_BLOCKS` | `parse_blocks` |
+| `PATINA_DISABLE_SANITIZE_TITLE` | `sanitize_title_with_dashes` |
 
 Each flag works as either a shell env var (`PATINA_DISABLE_KSES=1 php-fpm ...`)
 or a PHP constant defined before mu-plugins load. Under the hood the bridge

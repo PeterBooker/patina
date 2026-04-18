@@ -70,6 +70,10 @@ const SHIM_OVERRIDES: &[(&str, &str)] = &[
     ("esc_attr", "__patina_esc_attr_shim__"),
     ("wp_kses", "__patina_wp_kses_shim__"),
     ("parse_blocks", "__patina_parse_blocks_shim__"),
+    (
+        "sanitize_title_with_dashes",
+        "__patina_sanitize_title_with_dashes_shim__",
+    ),
 ];
 
 /// PHP source for all shims. Compiled and executed once by
@@ -114,6 +118,22 @@ function __patina_parse_blocks_shim__($content) {
     }
     return patina_parse_blocks_internal((string) $content);
 }
+function __patina_sanitize_title_with_dashes_shim__($title, $raw_title = '', $context = 'display') {
+    // Mirrors WordPress's signature exactly: three string args, two
+    // optional with their stock defaults. The `(string)` casts reproduce
+    // PHP's loose-typing behavior at the shim boundary so the Rust
+    // internal can keep strict `&str` parameters.
+    //
+    // Note: unlike esc_html/esc_attr, WordPress's sanitize_title_with_dashes
+    // does NOT fire a filter of its own — the outer `sanitize_title()`
+    // wrapper is where `apply_filters('sanitize_title', ...)` runs. So
+    // this shim is a pure value forwarder.
+    return patina_sanitize_title_with_dashes_internal(
+        (string) $title,
+        (string) $raw_title,
+        (string) $context
+    );
+}
 "#;
 
 /// Activate Patina: replace WordPress core functions with Rust implementations.
@@ -154,8 +174,10 @@ pub fn patina_activate(skip_list: Option<&Zval>) -> PhpResult<i64> {
     // `patina_deactivate()` call clears ACTIVATED but leaves the shim
     // user functions defined in the worker's function table — we don't
     // want to re-eval and trip "Cannot redeclare function" on the
-    // re-activation path.
-    if !php_function_exists("__patina_wp_kses_shim__") {
+    // re-activation path. Probe the most recently added shim so a stale
+    // `.so` from before a new override shipped still re-evals and picks
+    // up the new shim definitions.
+    if !php_function_exists("__patina_sanitize_title_with_dashes_shim__") {
         if let Err(e) = ext_php_rs::php_eval::execute(PATINA_SHIMS_PHP) {
             return Err(PhpException::default(format!(
                 "patina: shim eval failed: {e}"
@@ -543,6 +565,26 @@ pub fn patina_wp_kses_internal(
 }
 
 // ============================================================================
+// Sanitize — shim trampoline target
+// ============================================================================
+
+/// sanitize_title_with_dashes internal. Called from
+/// `__patina_sanitize_title_with_dashes_shim__`. No filter fires at this
+/// layer — the containing `sanitize_title()` wrapper is where WP runs
+/// `apply_filters('sanitize_title', ...)`.
+#[php_function]
+pub fn patina_sanitize_title_with_dashes_internal(
+    title: &str,
+    raw_title: &str,
+    context: &str,
+) -> PhpResult<String> {
+    panic_guard::guarded("sanitize_title_with_dashes", || {
+        patina_core::sanitize::title::sanitize_title_with_dashes(title, raw_title, context)
+            .into_owned()
+    })
+}
+
+// ============================================================================
 // Block parser — shim trampoline target
 // ============================================================================
 
@@ -590,6 +632,8 @@ pub fn get_module(module: ModuleBuilder) -> ModuleBuilder {
         .function(wrap_function!(patina_wp_kses_internal))
         // block parser
         .function(wrap_function!(patina_parse_blocks_internal))
+        // sanitize
+        .function(wrap_function!(patina_sanitize_title_with_dashes_internal))
         // pluggable
         .function(wrap_function!(wp_sanitize_redirect))
         .function(wrap_function!(wp_validate_redirect))

@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/Runner.php';
 require_once __DIR__ . '/reference/escaping.php';
 require_once __DIR__ . '/reference/pluggable.php';
+require_once __DIR__ . '/reference/sanitize.php';
 
 use Patina\Benchmarks\Runner;
 
@@ -44,6 +45,40 @@ $urlInputs = [
 
 foreach ($urlInputs as $label => $input) {
     $bench->run('wp_sanitize_redirect', $label, 'reference_wp_sanitize_redirect', 'wp_sanitize_redirect', [$input]);
+}
+
+// --- Sanitize title benchmarks ---
+
+$titleInputs = [
+    'tiny'     => 'Hello World',
+    'html'     => '<em>emphasis</em> title',
+    'unicode'  => str_repeat('Café résumé ', 10),
+    'cjk'      => str_repeat('日本語のタイトル ', 10),
+    'truncate' => str_repeat('a', 400),
+];
+
+foreach ($titleInputs as $label => $input) {
+    $bench->run(
+        'sanitize_title_with_dashes',
+        $label,
+        'reference_sanitize_title_with_dashes',
+        'patina_sanitize_title_with_dashes_internal',
+        [$input, '', 'display']
+    );
+}
+
+$saveInputs = [
+    'slash'   => 'foo/bar/baz',
+    'em_dash' => "hello\xE2\x80\x94world",
+];
+foreach ($saveInputs as $label => $input) {
+    $bench->run(
+        'sanitize_title_with_dashes(save)',
+        $label,
+        'reference_sanitize_title_with_dashes',
+        'patina_sanitize_title_with_dashes_internal',
+        [$input, '', 'save']
+    );
 }
 
 // --- KSES benchmarks ---

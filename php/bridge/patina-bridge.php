@@ -46,9 +46,10 @@ if (function_exists('patina_is_activated') && patina_is_activated()) {
  * into per-override contributions means a full rebuild per configuration.
  *
  * Flags (env var OR constant, either works):
- *   PATINA_DISABLE_ESC            — skip esc_html + esc_attr
- *   PATINA_DISABLE_KSES           — skip wp_kses (and every wrapper)
- *   PATINA_DISABLE_PARSE_BLOCKS   — skip parse_blocks
+ *   PATINA_DISABLE_ESC              — skip esc_html + esc_attr
+ *   PATINA_DISABLE_KSES             — skip wp_kses (and every wrapper)
+ *   PATINA_DISABLE_PARSE_BLOCKS     — skip parse_blocks
+ *   PATINA_DISABLE_SANITIZE_TITLE   — skip sanitize_title_with_dashes
  */
 $patina_flag = static function (string $name): bool {
     if (getenv($name)) {
@@ -67,6 +68,9 @@ if ($patina_flag('PATINA_DISABLE_KSES')) {
 }
 if ($patina_flag('PATINA_DISABLE_PARSE_BLOCKS')) {
     $patina_skip[] = 'parse_blocks';
+}
+if ($patina_flag('PATINA_DISABLE_SANITIZE_TITLE')) {
+    $patina_skip[] = 'sanitize_title_with_dashes';
 }
 
 // Activate non-pluggable function overrides.

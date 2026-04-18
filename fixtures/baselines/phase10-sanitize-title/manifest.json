@@ -1,0 +1,15 @@
+{
+  "timestamp": "20260418T083518Z",
+  "git_sha": "e1f5ec3",
+  "patina_version": "0.1.0",
+  "php_version": "8.3.30",
+  "wp_version": "6.9.4",
+  "host": "Peter-PC",
+  "cpu": "AMD Ryzen 9 5950X 16-Core Processor",
+  "iterations_per_scenario": 200,
+  "chunks": 5,
+  "chunk_iters": 40,
+  "warmup_per_chunk": 3,
+  "cpuset": "2,3",
+  "configs_run": "stock,esc_only,kses_only,parse_blocks_only,sanitize_title_only,full_patina"
+}

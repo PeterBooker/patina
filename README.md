@@ -155,7 +155,7 @@ No data migration, no database changes, nothing to undo.
 
 ## Roadmap
 
-- **Next**: high-value targets using the mechanisms above — `esc_url`, `wpautop`, `sanitize_title`, `make_clickable`
+- **Next**: high-value targets using the mechanisms above — `esc_url`, `wpautop`, `make_clickable`
 - **Future**: PECL packaging, Composer distribution, OS packages
 
 ## License

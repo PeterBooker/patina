@@ -15,6 +15,10 @@ harness = false
 name = "kses"
 harness = false
 
+[[bench]]
+name = "sanitize"
+harness = false
+
 [dependencies]
 patina-core = { path = "../patina-core" }
 criterion = "0.5"
